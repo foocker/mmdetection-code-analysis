@@ -1,0 +1,96 @@
+% settings for listings.sty
+\renewcommand{\lstlistingname}{代码清单}
+\lstdefinestyle{lfonts}{
+  basicstyle   = \footnotesize\ttfamily,
+  stringstyle  = \color{purple},
+  keywordstyle = \color{blue!60!black}\bfseries,
+  commentstyle = \color{olive}\scshape,
+}
+\lstdefinestyle{lnumbers}{
+  numbers     = left,
+  numberstyle = \tiny,
+  numbersep   = 1em,
+  firstnumber = 1,
+  stepnumber  = 1,
+}
+\lstdefinestyle{llayout}{
+  breaklines       = true,
+  tabsize          = 2,
+  columns          = flexible,
+}
+\lstdefinestyle{lgeometry}{
+  xleftmargin      = 15pt,
+  xrightmargin     = 0pt,
+  frame            = tb,
+  framesep         = \fboxsep,
+  framexleftmargin = 15pt,
+}
+\lstdefinestyle{lgeneral}{
+  style = lfonts,
+  style = lnumbers,
+  style = llayout,
+  style = lgeometry,
+}
+\def\beginlstdelim#1#2#3{%
+  \def\endlstdelim{#2\egroup}%
+  \ttfamily#1\bgroup\color{#3}\aftergroup\endlstdelim}
+\lstdefinestyle{ldelims}{
+  moredelim = **[is][\beginlstdelim{\$}{\$}{orange}]{\$}{\$},
+  moredelim = **[is][\beginlstdelim{\{}{\}}{ForestGreen}]{\{}{\}},
+  moredelim = **[is][\beginlstdelim{[}{]}{cyan}]{[}{]},
+}
+% LaTeX lst style
+\lstdefinestyle{lltx}{
+  language = {[LaTeX]TeX},
+  style = lgeneral,
+  style = ldelims,
+  morekeywords = {% LaTeX original commands
+    maketitle,
+    rmfamily, sffamily, ttfamily,
+    itshape, slshape, scshape,
+    mdseries, bfseries, emph,
+    textrm, textsf, texttt,
+    textit, textsl, textsc,
+    textmd, textbf,
+    newcommand, renewcommand, providecommand,
+    cs, meta, marg, oarg, parg
+  }
+}
+\lstdefinestyle{iltx}{
+  style      = lltx,
+  basicstyle = \ttfamily
+}
+\lstdefinestyle{lbash}{
+  language   = {bash},
+  style      = lgeneral,
+}
+\lstdefinestyle{ibash}{
+  style      = lbash,
+  basicstyle = \ttfamily
+}
+
+% code style setting
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.95,0.95,0.92}
+
+\lstdefinestyle{mystyle}{
+	backgroundcolor=\color{backcolour},   
+	commentstyle=\color{codegreen},
+	keywordstyle=\color{magenta},
+	numberstyle=\tiny\color{codegray},
+	stringstyle=\color{codepurple},
+	basicstyle=\footnotesize,
+	breakatwhitespace=false,         
+	breaklines=true,                 
+	captionpos=b,                    
+	keepspaces=true,                 
+	numbers=left,                    
+	numbersep=5pt,                  
+	showspaces=false,                
+	showstringspaces=false,
+	showtabs=false,                  
+	tabsize=2
+}
+\endinput
