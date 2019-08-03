@@ -102,6 +102,7 @@ AME.register\_module方式装饰,新增.所有被注册的对象都是一个完�
 
 
 \subsection{Backbone}
+\label{backbone}
 特征提取,略.
 \subsection{Necks}
 展开描述:目标尺度和金字塔层级的关系,这些层级对应的尺度与损失函数,样本采样等的关系.
@@ -109,6 +110,40 @@ AME.register\_module方式装饰,新增.所有被注册的对象都是一个完�
 \subsection{Heads}
 anchor\_heads, bbox\_heads, mask\_heads都将有loss的计算,是核心点,需详细描述.
 
+\subsubsection{ssdhead}
+ssd结构的检测网络，目前已有ssd300,ssd512,结构细节参考\ref{backbone}. 从配置文件中可有看到,它没有neck,
+因层级结构在backbone实现.
+
+ssdhead继承自anchorhead,主要功能为处理多层级特征上的anchor构造和target标定与筛选,
+基本的feauturemap上的acnhor生成由mmdet.core.
+anchor中的AnchorGenerator完成,优化目标anchor由anhor\_target完成.
+ssdhead中forward前向返回各层级对应的类别分数和坐标信息,loss函数则得到对应的损失函数,以字典的形式返回,最终求导时,汇总成一个值,同时也能计算各个部分损失函数的均值,方差，方便优化,debug.
+
+此处的难点在于anchor的设定和target的标定,筛选.现就anchor这一块细说如下:
+
+anchor基本介绍: anchor设计和caffe ssd anchor设计一致, 假设min\_size为$a$, max\_size为$b$, 则先生成ratio为1, 宽度和高度为$(a, a), (\sqrt{ab}$, 
+$\sqrt{ab})$的两个anchor, ratio为$2, 1/2, 3, 1/3$则分别生成宽度和高度为$(a*\sqrt{ratio}, a/\sqrt{ratio})$的anchor, mmdetection中必须设定每一层的min\_size, max\_size, 因此ratios为$[2]$则对应4个anchor, ratios为$[2,3]$则对应6个anchor.
+
+在init()函数中,先生成min\_size, max\_size, 注意它这里是必须要指定max\_size(和caffe SSD不同,无法生成奇数个anchor), 确保len(min\_size)=
+len(max\_size), 调用AnchorGenerator()类生成了base\_anchors, 数量是6或者10,使用indices操作从6个anchor里选择$(0, 3, 1, 2)$或者从10个anchor里选择$(0, 5, 1, 2, 3, 4) $$\rightarrow$ 最终生成4个或者6个anchor.于在多个feature map上生成anchor,因此使用了一个for循环操作, 将anchor\_generator放入到anchor\_generatos[]中.
+
+
+AnchorGenerator类, init()函数需要如下参数:
+
+\begin{itemize}
+	\item base\_size: 即设置的min\_size
+	\item scales: 是$(1, \sqrt{max\_size / min\_size})$, 用来生成ratio为1的两个anchor
+	\item ratios: 是$(1, 2, 1/2)$或者$(1, 2, 1/2, 3, 1/3)$
+	\item ctr: ctr由stride生成, 是anchor的中心坐标, $(\frac{stride - 1}{2}, \frac{stride - 1}{2} ) $在gen\_base\_anchor()函数里, 使用上面的参数来计算base\_anchor, 计算流程如下:
+	\begin{itemize}
+		\item 根据ratios来计算h\_ratios和w\_ratios, 即上面所述的$(1 / \sqrt{ratios}$, $\sqrt{ratios}) $.
+		\item 根据scales来计算base\_size, 一共有2个分别是$$(min\_size, \sqrt{min\_size * max\_size}) = min\_size * scales$$
+		\item 计算anchors的宽度和高度, 只以宽度举例: $w = base\_size * w\_ratios$, 以ratios是$(1, 2, 1/2)$举例, base\_size shape为$(2, 1)$, w\_ratios shape为$(1, 3)$, 
+		计算出的w是$(2, 3) $一共生成了6个anchor, 如果ratios是$(1, 2, 1/2, 3, 1/3)$, 则生成10个anchor (此处anchor数量和标准ssd anchor数量不一致 $\rightarrow$
+		 再筛选(即ssd\_head.py中使用indices操作进行筛选))
+	\end{itemize}
+	
+\end{itemize}
 
 \subsection{Losses}
 选描述
@@ -160,5 +195,14 @@ Hook相关
 案例
 \section{新增模型}
 RetinaFace, BlazeFace, FaceBoxes等
+
+\section{计划}
+\begin{itemize}
+	\item[1.] 基本骨架网络说明,ssd-vgg,将其和配置文件ssd300,ssd500中的head参数对齐
+	\item[2.] anchor target 部分
+	\item [3.]neck层,相关retinanet，maskrcnn等
+	\item [4.] 损失函数
+\end{itemize}
+
 
 \end{document}
