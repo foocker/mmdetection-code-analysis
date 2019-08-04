@@ -76,6 +76,7 @@ mmdet:
 	\centering
 	\includegraphics[width=5cm,height=3cm]{./pic/mmdetect_pipe.png}
 	\caption{Trainning pipeline}
+	\label{trainpipe_pic}
 	\end{minipage}
 \end{figure}
 
@@ -86,25 +87,56 @@ mmdet:
 2. mmdet.models.builder 中的build\_detector根据配置信息构造模型
 
 \begin{adjustwidth}{0.5cm}{0cm}
-2.5 build函数依次遍历配置中的模型信息,调用\_build\_module函数,按type关键字从注册表中获取相应的
+
+2.5 build函数调用\_build\_module(新版为build\_from\_cfg)函数,按type关键字从注册表中获取相应的
 模型对象,并根据配置参数实例化对象(配置文件的模型参数只占了各模型构造参数的一小部分,模型结构并非可以随意更改).\\
 2.6 registr.py实现了模型的注册装饰器,其主要功能就是将各模型组件类对象保存到registry.module\_dict中,从而可以实现2.5所示功能.\\
 2.7 目前包含BACKBONES,NECKS,ROI\_EXTRACTORS,SHARED\_\\
 HEADS,HEADS,LOSSES,DETECTORS七个(容器).注册器可按@N
-AME.register\_module方式装饰,新增.所有被注册的对象都是一个完整的pytorch构图\
+AME.register\_module方式装饰,新增.所有被注册的对象都是一个完整的pytorch构图\\
+2.9 @DETECTORS.register\_module装饰了完整的检测算法(OneStage，TwoStage),各个部件在其init()函数中实例化,实现2.5的依次调用.
 \end{adjustwidth}
-3. 最后就是数据迭代器和训练pipeline
+3. 最后是数据迭代器和训练pipeline\ref{trainpipeline}.
 
 \subsection{Configs}
 配置方式支持python/json/yaml,从mmcv的Config解析,其功能同maskrcnn-benchmark的yacs类似,将字典的取值方式属性化.
 
 配置文件模型部分包含模型组件及其可改动模型结构的参数,比如backbone的层数,冻结的stage;bbox\_head的in\_channel，类别，损失函数等;训练部分主要包括anchor采样相关系数;测试包括非极大抑制等相关参数;剩下数据,优化器,模型管理,日志等相关信息,一看即明.
 
-
+\newpage
 \subsection{Backbone}
 \label{backbone}
-特征提取,略.
+
+\begin{figure}[htbp]
+	\centering
+	\begin{minipage}[t]{0.48\textwidth}
+	\centering
+	\includegraphics[width=5cm, height=4cm]{./pic/resnet_struct.png}
+	\caption{resnet}
+	\label{picresnet}
+	\end{minipage}
+	\begin{minipage}[t]{0.48\textwidth}
+		\centering
+		\includegraphics[width=5cm,height=4cm]{./pic/ssd.png}
+		\caption{ssd}
+		\label{picssd}
+	\end{minipage}
+\end{figure}
+
+% \begin{figure}[htbp]
+% 	\centering
+% 	\includegraphics[width=5cm, height=4cm]{./pic/ssd.png}
+% 	\caption{config maskrcnn}
+% \end{figure}
+
+
 \subsection{Necks}
+\begin{figure}[htbp]
+	\centering
+	\includegraphics[width=5cm,height=4cm]{./pic/fpn.png}
+	\caption{fpn}
+	\label{picfpn}
+\end{figure}
 展开描述:目标尺度和金字塔层级的关系,这些层级对应的尺度与损失函数,样本采样等的关系.
 % 要检测到$15\times15$的小目标,有哪些考虑点
 \subsection{Heads}
@@ -146,51 +178,222 @@ AnchorGenerator类, init()函数需要如下参数:
 \end{itemize}
 
 \subsection{Losses}
-选描述
+CrossEntropyLoss， SmoothL1Loss，Fcoalloss, BalancedL1Loss, IoULoss,
+BoundedIoULoss, ArcLoss
+
+
 \subsection{Detectors}
-重点one\_stage, two\_stage详细阐述
+OneStage, TwoStage和能改动的地方.
+
+\subsubsection{maskrcnn}
+以配置文件mask\_rcnn\_r50\_fpn\_1x.py为例说说twao\_stage的实现过程.
+配合two\_stage的forward\_train()函数和配置文件,即可.
+
+首先backbone为resnet50，(resnet系列结构参见\ref{picresnet}),
+其以tuple形式返回4个stage的特征图,片段代码如下:
+% \begin{figure}[htbp]
+% 	\centering
+% 	\includegraphics[width=5cm, height=4cm]{./pic/maskrcnn_50.png}
+% 	\caption{config maskrcnn}
+% \end{figure}
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+
+outs = []
+for i, layer_name in enumerate(self.res_layers):
+	res_layer = getattr(self, layer_name)
+	x = res_layer(x)
+	if i in self.out_indices:
+		outs.append(x)
+
+\end{lstlisting}
+
+然后neck为fpn,结构参见\ref{picfpn},
+fpn根据config中的out\_indices取出以resnet50输出的对应stage,分别构造输出channel维度统一的卷积算子,然后按照\ref{picfpn}所示融合方式进行不同尺度的特征融合,以元组形式输出结果.
+在配置信息里有一条num\_outs=5,是为mask-rcnn在最顶层特征增加的最大池化特征输出.以上两块为提取特征,被extract\_feat整合在一块,
+
+% \lstset{style=mystyle}
+% \begin{lstlisting}[language=Python]
+% 	for i in range(self.start_level, self.backbone_end_level):
+% 		l_conv = ConvModule(
+% 			in_channels[i],
+% 			out_channels,
+% 			1,
+% 			conv_cfg=conv_cfg,
+% 			norm_cfg=norm_cfg,
+% 			activation=self.activation,
+% 			inplace=False)
+% 		fpn_conv = ConvModule(
+% 			out_channels,
+% 			out_channels,
+% 			3,
+% 			padding=1,
+% 			conv_cfg=conv_cfg,
+% 			norm_cfg=norm_cfg,
+% 			activation=self.activation,
+% 			inplace=False)
+
+% 		self.lateral_convs.append(l_conv)
+% 		self.fpn_convs.append(fpn_conv)
+
+% \end{lstlisting}
+紧接着forward\_train中包含了剩下的所有流程.
+\begin{equation*}
+	\begin{aligned}
+		 rpn\_head \rightarrow rpn\_head.loss \rightarrow rpn\_head.get\_bboxes \rightarrow assign \rightarrow sample \\
+		\rightarrow bbox\_roi\_extractor \rightarrow  bbox\_head \rightarrow bbox\_head.get\_target. \rightarrow bbox\_h\\
+		ead.loss \rightarrow mask\_roi\_extractor \rightarrow mask\_head \rightarrow mask\_head.get\_target
+	\end{aligned}
+\end{equation*} 
+
+这里梳理一下部分函数.
+
+候选框层RPN,RPNHead继承AnchorHead, 它的几个核心操作都在anchor\_head.py中实现,主要包括get\_anchors, anchor\_target(后续说明),函数get\_bboxes结合配置参数从rpn前向得到的
+2分类和位置预测结果中筛选出最终的proposals.
+
+get\_bboxes中先通过self.anchor\_generators[i].grid\_anchors()这个函数取到所有的anchor\_boxs,再通过self.get\_bboxes\_single()根据rpn前向的结果选出候选框,
+在self.get\_bboxes\_single()中，先在每个尺度上取2000(配置)个anchor出来，concat到一起作为该图像的anchor，对这些anchor boxs作nms(thr=0.7)就得到了所需的候选框.
+需注意预测的bbox是对数化了的，在做iou计算之前需用delta2bbox()函数进行逆变换.bbox\_head中的bbox2roi类似.
+
+得到的候选框最终由配置中train\_cfg的rcnn.assigner, rcnn.sampler进行标定和筛选,保持正负样本平衡和框的质量,方便优化.
+
+MaxIoUAssigner:
+\begin{adjustwidth}{1cm}{0cm}
+\begin{itemize}
+	\item[1.] 所有候选框置-1
+	\item[2.] 将与所有gtbbox的iou小于neg\_iou\_thr置0
+	\item[3.] iou大于pos\_iou\_thr的将其匹配
+	\item[4.] 为了避免标定框无训练目标,将gtbbox匹配于与它iou最近的bbox(会导致部分正样本的匹配iou值很小).
+\end{itemize}
+\end{adjustwidth}
+
+RandomSampler,保持设定的平衡比例,随机采样.其他采样待补.
+
+然后通过SingleRoIExtractor(roi\_extractors/single\_level.py)统一RoI
+Align四个尺度且大小不同的的proposals,使其大小为7*7(bbox)或14*14
+(mask).配置信息rpn\_head中的anchor\_strides为5个尺度,
+包含了fpn额外加入的最大池化层,而bbox\_roi\_extractor的featmap\_strides却只包含四个尺度,表明只需对前四层进行align.
+最终送入bbox head 和mask head做第二次优化(two stage).
+
+RoIAlign在ops中,经cuda加速,详解待后.
+其中roi\_extractors中的特征层级映射函数如下:
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+	def map_roi_levels(self, rois, num_levels):
+	"""Map rois to corresponding feature levels by scales.
+	 self.finest_scale = 56, 映射到0级的阈值
+	$(0, 56, 56*2, 56*4, \infty) \rightarrow (0, 1, 2, 3)$
+	bbox2roi变换后的rois
+
+	Returns:
+		Tensor: Level index (0-based) of each RoI, shape (k, )
+		因不同层级对应不同的ROIAlign
+	"""
+	scale = torch.sqrt(
+		(rois[:, 3] - rois[:, 1] + 1) * (rois[:, 4] - rois[:, 2] + 1))
+	target_lvls = torch.floor(torch.log2(scale / self.finest_scale + 1e-6))
+	target_lvls = target_lvls.clamp(min=0, max=num_levels - 1).long()
+	# 这个变换在原始论文中有.
+	return target_lvls
+\end{lstlisting}
 
 \section{数据处理}
 \label{sec:detail}
 coco数据等格式，多格式的转换
 
 \section{模型结构}
-详细解释一两个模型的细节,比如正负样本采样，损失函数改写,anchor相关尺度变换的细节
+OneStage，TwoStage,其他结构的变体.
+\section{训练pipeline}
+\label{trainpipeline}
+图见\ref{trainpipe_pic}注意它的四个层级.主要查看api/train.py, mmcv中的runner相关文件.
+% 这里说说非分布训练模式\_non\_dist\_train.
+主要两个类:Runner和Hook
+Runner将模型,批处理函数batch\_pro
+cessor,优化器作为基本属性,是为训练过程中记录相关节点信息,
+这些信息均被记录在mode,\_hooks,\_epoch,\_iter,\_inner\_iter,\_max\_epochs,\_max\_
+iters中.从而实现训练过程中插入不同的操作,也即各种hook.
+理清训练流程只需看Runner的成员函数run.在run里会根据mode按配置(workflow)epoch循环调用train和val函数,
+跑完所有的epoch.其中train代码如下:
 \lstset{style=mystyle}
 \begin{lstlisting}[language=Python]
-import numpy  as np
-class Convolution():
+ def train(self, data_loader, **kwargs):
+	self.model.train()
+	self.mode = 'train'    # 改变模式
+	self.data_loader = data_loader
+	self._max_iters = self._max_epochs * len(data_loader)    # 最大batch循环次数
+	self.call_hook('before_train_epoch')    # 根据名字获取hook对象函数
+	for i, data_batch in enumerate(data_loader):
+		self._inner_iter = i    # 记录训练迭代轮数
+		self.call_hook('before_train_iter')    # 一个batch前向开始
+		outputs = self.batch_processor(
+			self.model, data_batch, train_mode=True, **kwargs)
+		self.outputs = outputs
+		self.call_hook('after_train_iter')    # 一个batch前向结束
+		self._iter += 1    # 方便resume时,知道从哪一轮开始优化
 
-	def __init__(self, nc_in, nc_out, kernel_size, stride=2,padding=1):
-		self.kernel_size = kernel_size
-		self.weights = np.random.randn(nc_in * kernel_size[0] * kernel_size[1] ,nc_out) * np.sqrt(2/nc_in)
-		self.biases = np.zeros(nc_out)
-		self.stride = stride
-		self.padding = padding
-	
-	def forward(self,x):
-		mb, ch, n, p = x.shape
-		y = np.matmul(arr2vec(x,self.kernel_size,self.stride,self.padding), self.weights) + self.biases
-		y = np.transpose(y,(0,2,1))
-		n1 = (n-self.kernel_size[0]+ 2 * self.padding) //self.stride + 1
-		p1 = (p-self.kernel_size[1]+2 * self.padding )//self.stride + 1
-		return y.reshape(mb,self.biases.shape[0],n1,p1)
-	
-    def backward(self,grad):
-        """
-        写点字可以？
-        """
-		mb, ch_out, n1, p1 = grad.shape
-		grad = np.transpose(grad.reshape(mb,ch_out,n1*p1),(0,2,1))
-		self.grad_b = grad.sum(axis=1).mean(axis=0)
-		self.grad_w = (np.matmul(self.old_x[:,:,:,None],grad[:,:,None,:])).sum(axis=1).mean(axis=0)
-		new_grad = np.matmul(grad,self.weights.transpose())
-		return vec2arr(new_grad, self.kernel_size, self.old_size, self.stride, self.padding)
+	self.call_hook('after_train_epoch')    # 一个epoch结束
+	self._epoch += 1    # 记录训练epoch状态,方便resume
 
 \end{lstlisting}
-OneStage，TwoStage,其他
-\section{训练pipeline}
-Hook相关
+
+上面让人困惑的是hook函数,
+hook函数继承自mmcv的Hook类,其默认了6+8+4个函数,也即\ref{trainpipe_pic}所示的6个层级节点,
+外加2*4个区分train和val的节点记录函数,以及4个边界检查函数.
+从train.py中容易看出,在训练之前,已经将需要的hook函数注册到Runner的self.\_hook中了,包括从配置文件解析的优化器,学习率调整函数,模型保存,
+一个batch的时间记录等(注册hook算子在self.\_hook中按优先级升序排列).
+于是只需理解call\_hook函数即可.
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+def call_hook(self, fn_name):
+	for hook in self._hooks:
+		getattr(hook, fn_name)(self)
+\end{lstlisting}
+
+如上看出,在训练的不同节点,将从注册列表中调用实现了该节点函数的类成员函数.比如
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+class OptimizerHook(Hook):
+
+    def __init__(self, grad_clip=None):
+        self.grad_clip = grad_clip
+
+    def clip_grads(self, params):
+        clip_grad.clip_grad_norm_(
+            filter(lambda p: p.requires_grad, params), **self.grad_clip)
+
+    def after_train_iter(self, runner):
+        runner.optimizer.zero_grad()
+        runner.outputs['loss'].backward()
+        if self.grad_clip is not None:
+            self.clip_grads(runner.model.parameters())
+        runner.optimizer.step()
+\end{lstlisting}
+将在每个train\_iter后实现反向传播和参数更新.
+
+学习率优化相对复杂一点,其基类LrUpdaterHook,实现了before\_run, before\_train\_epoch, before\_train\_iter三个hook函数,意义自明.
+这里选一个余弦式变化,稍作说明:
+
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+class CosineLrUpdaterHook(LrUpdaterHook):
+
+    def __init__(self, target_lr=0, **kwargs):
+        self.target_lr = target_lr
+        super(CosineLrUpdaterHook, self).__init__(**kwargs)
+
+    def get_lr(self, runner, base_lr):
+        if self.by_epoch:
+            progress = runner.epoch
+            max_progress = runner.max_epochs
+        else:
+            progress = runner.iter
+            max_progress = runner.max_iters
+        return self.target_lr + 0.5 * (base_lr - self.target_lr) * \
+			(1 + cos(pi * (progress / max_progress)))
+\end{lstlisting}
+从get\_lr可以看到,学习率变换周期有两种,epoch->max\_epoch,或者更大的iter->max\_iter,后者表明一个epoch内不同batch的学习率可以不同,因为没有什么理论,所有这两种方式都行.
+其中base\_lr为初始学习率,target\_lr为学习率衰减的上界,而当前学习率正如函数的返回表达式.
+
 \section{更改模型}
 案例
 \section{新增模型}
@@ -199,9 +402,11 @@ RetinaFace, BlazeFace, FaceBoxes等
 \section{计划}
 \begin{itemize}
 	\item[1.] 基本骨架网络说明,ssd-vgg,将其和配置文件ssd300,ssd500中的head参数对齐
-	\item[2.] anchor target 部分
-	\item [3.]neck层,相关retinanet，maskrcnn等
-	\item [4.] 损失函数
+	\item[2.] anchor target通用的和具体到某算法
+	\item [3.] neck层,fpn的扩展和变体
+	\item [4.] 损失函数基本和具体到maskrcnn head部分
+	\item [5.] Detectors中maskrcnn的RPNHead,bboxhead,中有关get\_anchors, anchor\_target函数部分
+	\item [6.] ops中的ROIAlign 
 \end{itemize}
 
 
