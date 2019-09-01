@@ -137,12 +137,140 @@ AME.register\_module方式装饰,新增.所有被注册的对象都是一个完�
 	\caption{fpn}
 	\label{picfpn}
 \end{figure}
-展开描述:目标尺度和金字塔层级的关系,这些层级对应的尺度与损失函数,样本采样等的关系.
-% 要检测到$15\times15$的小目标,有哪些考虑点
-\subsection{Heads}
-anchor\_heads, bbox\_heads, mask\_heads都将有loss的计算,是核心点,需详细描述.
 
-\subsubsection{ssdhead}
+\subsubsection{多尺度结构}
+主要分析fpn结构的变体,比如ssd相关的FaceBoxes,HRNet等.
+
+
+\subsection{Heads}
+Heads 主要包含了是三部分,anchor\_heads, bbox\_heads, mask\_heads,anchor是two-stage的rpn部分或者one-stage的头部.最终的损失函数均在这里实现.
+
+\subsubsection{AnchorHead}
+\label{sub:anchorhead}
+anchor head 主要包括AnchorGenerator, anchor\_target, 后者包含了assign,sample.因为不同尺度操作雷同,于是作者设计了一个公共函数multi
+\_apply.这一小节主要说明以上函数,损失函数见\ref{sec:loss}.
+
+AnchorGenerator类为不同特征层生成anchor,输入参数base\_size, scales, ratios分别表示:anchor在特征层上的基础大小(特征层相对于原图的stride),anchor在特征层上的尺度大小(可以多个，增加感受野),anchor在保持基础大小不变的情况下的长宽比.
+len(scales)*len(ratios)即为一格的anchor个数.
+
+比如输入图像大小(640*640), 选择(p2, p3)作为其特征层,则p2大小为(160*160),base\_ size=4,若设定ratios=[0.5,1.0,2.0], scales=[8, 16],则在p2上一格对应的base\_anchor的(w,h)为[(45.25,22.63),  (90.51, 45.25),
+ (32.00, 32.00),  (64.00, 64.00), (22.63, 45.25),(45.25, 90.51)].其中$64=4*16*1,90.51=4*16*\sqrt{2}, 22.63=4*8/\sqrt{2}.$
+ 那么每一格所对应的6个base\_anchor相对于中心点的偏移量即为:
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+	
+											[[-21.,  -9.,  24.,  12.],
+											[-43., -21.,  46.,  24.],
+											[-14., -14.,  17.,  17.],
+											[-30., -30.,  33.,  33.],
+											[ -9., -21.,  12.,  24.],
+											[-21., -43.,  24.,  46.]]
+
+\end{lstlisting}
+
+因为这里都是相对于自身一格的偏移量,所有当要算在原图上的中心偏移量时,直接根据torch或者numpy的广播机制,
+首先得到特征图在原图的网格坐标,然后和此相加,即得此特征层的所有all\_anchors.见grid\_anchors函数.
+这里面涉及到一些操作技巧,比如:
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+ws = (w * w_ratios[:, None] * self.scales[None, :]).view(-1)
+hs = (h * h_ratios[:, None] * self.scales[None, :]).view(-1)
+\end{lstlisting}
+包括nms,assign等部分都有很多细节操作,这些实现检测算法的基础函数,需要多加练,才能复现新的算法.可见\ref{sec:basefunc}.
+如上不难看到,输入图像的所有anchor数量巨大.
+
+
+模块anchor中还有一个anchor\_target文件,其主要是为了给设计的anchor标定label以及筛选anchor(便于优化等).
+
+这里利用的anchor\_target\_single函数来解释multi\_apply函数:
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+from functools import partial
+from six.moves import map, zip
+def multi_apply(func, *args, **kwargs):
+    pfunc = partial(func, **kwargs) if kwargs else func
+    map_results = map(pfunc, *args)
+	return tuple(map(list, zip(*map_results)))
+\end{lstlisting}
+
+partial 函数的功能就是：把一个函数的某些参数给固定住，返回一个新的函数(这里就是将**kwargs中的参数固定住).
+当函数参数太多，需要固定某些参数时，可以使用 functools.partial 创建一个新的函数
+map(function, sequence) ,对 sequence 中的 item 依次执行 function(item)，并将结果组成一个 迭代器返回,
+最后zip 并行循环.
+
+在anchor\_target中
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+result = multi_apply(
+         anchor_target_single,
+         anchor_list,
+         valid_flag_list,
+         gt_bboxes_list,
+         gt_bboxes_ignore_list,
+         gt_labels_list,
+         img_metas,
+         target_means=target_means,
+         target_stds=target_stds,
+         cfg=cfg,
+         label_channels=label_channels,
+         sampling=sampling,
+		 unmap_outputs=unmap_outputs)
+\end{lstlisting}
+
+是先将配置文件,采样与否的flag，anchor于gt\_box在映射空间(平移归一,放缩log)中各偏差量的
+滑动平均处理(见core/bbox/transforms/bbox2delta函数最后一行)固定住.然后anchor\_target\_single
+对*args参数：anchor\_list,gt\_bboxes\_list, img\_metas等并行处理.得到最终的label,bbox,正负样本index.这里 label\_weights用来记录筛选后的信息位置.
+
+*args参数的说明:
+\begin{itemize}
+	\item anchor\_list：见anhor\_head中的get\_anchor函数,是一个list[list[Tensors]]结构，最外层是图片个数，再内一层是尺度个数，里面的Tensors的shape是[H*W*4, 4]，其中H和W代表对应尺度特征图的高和宽.
+	\item img\_metas有五个字段:ori/img/pad\_shape, scale\_factor, flip
+	
+\end{itemize}
+
+在调用anchor\_target\_single函数之前:
+
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+num_imgs = len(img_metas)
+assert len(anchor_list) == len(valid_flag_list) == num\_imgs
+# anchor number of multi levels
+# 选出第一张图的各个特征层的anchor数量,比如上面给的p2即为160*160*6,一格点对应的anhor shape为(6,4)
+# 因为有多层,比如p2,p3，则[(160*160*4,4), (80*80*6,4)]
+# 为images_to_levels函数,切片用:将所有以图片为第一维度的结果,转换成以特征图尺度个数为第一维度的结果(算loss)
+num_level_anchors = [anchors.size(0) for anchors in anchor_list[0]]
+# concat all level anchors and flags to a single tensor
+#在调用multi\_apply之前需要将anchor\_list的不同层级的anchor cat在一起,最终变为list[Tensor]结构.
+#最外层为图像个数.这样就能利用multi\_apply中的map在每张图上做做同样的操作了.
+#将所有图的anchor合在一起
+for i in range(num_imgs):
+	assert len(anchor_list[i]) == len(valid_flag_list[i])
+	anchor_list[i] = torch.cat(anchor_list[i])
+	valid_flag_list[i] = torch.cat(valid_flag_list[i])
+	# valid_flag_list结合meta信息,进一步筛选无效anhor(其实筛掉的很少)
+\end{lstlisting}
+
+anchor\_target\_single函数：主要涉及assign\_and\_sample,bbox2delta,
+unmap四个函数.
+
+assign\_and\_sample根据cfg从配置信息拿到对应的assign,sample类对象,
+one-stage模型没有sample(不代表损失函数利用所有的anchor),sample主要为two-stage服务.
+
+采样主要包含RandomSampler，OHEMSampler，InstanceBalancedPosSampler，IoUBalancedNegSampler,
+均继承自BaseSampler为一抽象类,继承自它的的类必须完成
+\_sample\_pos,\_sample\_neg两函数.按照python的语法，子类可以使用 raise NotImplementedError来避免不能实例化的问题.PseudoSampler即是如此,它重写了sample函数,该函数并没有做任何筛选.RandomSampler的意思自明,其他采样后补.
+标定MaxIoUAssigner见\ref{sub:MaxIoUAssigner}.
+
+bbox2delta 主要注意一点的是相对位置是相对于anchor的,所以除的是anchor的$w,h$
+$$
+d_x = (g_x - p_x) / p_w,
+d_y = (g_y - p_y) / p_h,
+d_w = \log(g_w / p_w),
+d_h = \log(g_h / p_h).
+$$
+其中$x,y$是中心坐标.这里涉及到一些优化目标函数的变量的"变换"问题,比如这里若$g_w-p_w=1+\epsilon$,则$d_w=\epsilon$.如此似乎可以将其替换为$d_w=g_w/p_w-1$,实际上这样的效果可能还是不及$\log$,因为一开始它就将变化幅度压缩了.另外,相对位置的归一化差异是关键,比如人脸识别中,landmarks的优化,同常损失函数为欧氏距离,如何对变量进行处理?若是先预测bbox,再预测landmarks,可以相对于bbox的中心坐标做变换,若直接预测呢?
+
+\subsubsection{SSDHead}
 ssd结构的检测网络，目前已有ssd300,ssd512,结构细节参考\ref{backbone}. 从配置文件中可有看到,它没有neck,
 因层级结构在backbone实现.
 
@@ -177,15 +305,52 @@ AnchorGenerator类, init()函数需要如下参数:
 	
 \end{itemize}
 
+
+
 \subsection{Losses}
-CrossEntropyLoss， SmoothL1Loss，Fcoalloss, BalancedL1Loss, IoULoss,
+\label{sec:loss}
+\subsubsection{基本认识}
+
+\href{https://arxiv.org/abs/1708.02002}{Fcoalloss}.
+想像一下特征层上的锚框,远离gt的必然占绝大多数,围绕在gt周围的bbox有模棱两可的(正负),故有正负难易之分.FcoalLoss 是为解决难易样本的不平衡问题.公式如下:
+\begin{equation}
+	FL(p_t) = -\alpha_{t}(1-p_t)^{\gamma}log(p_t),\text{其中}
+	p_t=\left\{
+	\begin{aligned}
+	&p & if y =1\\
+	&1-p & else.
+	\end{aligned}
+	\right.
+\end{equation}
+
+$\alpha_t$缓解样本不平衡现象,$(1-p_t)^{\gamma}$为降低易分样本的损失值(考虑到易分样本比例高).
+公式可以这样理解:对于正样本分对了,则$p_t->1$，$(1-p_t)^{\gamma}$有减缓效果,当分错了,即
+$p_t << 0.5$,则$1-p_t >>0.5$,效果和CrossEntropy没差,对于负样本也是如此.因此起到压缩
+图6中的左图右端,右图左端的效果.
+
+\begin{figure}[htbp]
+	\centering
+	\includegraphics[width=5cm,height=3cm]{./pic/Focal_01.png}
+	\caption{FcoalLoss}
+\end{figure}
+
+\href{https://arxiv.org/abs/1811.05181}{GHM}.
+GHM算是对Fcoal改进,作者统计了样本的梯度信息,提出梯度均衡机制,让各种难度类型的样本有均衡的累计贡献.具体细节看论文即可.
+
+\href{https://arxiv.org/abs/1908.03851}{IoULoss}.
+\href{https://arxiv.org/abs/1711.00164}{BoundedIoULoss}.
+
+\subsubsection{实现解析}
+CrossEntropyLoss， SmoothL1Loss，Fcoalloss,GHMLoss, BalancedL1Loss, IoULoss,
 BoundedIoULoss, ArcLoss
 
 
+
 \subsection{Detectors}
-OneStage, TwoStage和能改动的地方.
+这节主要分析maskrcnn和reppoints,retinaFace三个算法.
 
 \subsubsection{maskrcnn}
+\label{sub:maskrcnn}
 以配置文件mask\_rcnn\_r50\_fpn\_1x.py为例说说twao\_stage的实现过程.
 配合two\_stage的forward\_train()函数和配置文件,即可.
 
@@ -248,7 +413,7 @@ fpn根据config中的out\_indices取出以resnet50输出的对应stage,分别构
 
 这里梳理一下部分函数.
 
-候选框层RPN,RPNHead继承AnchorHead, 它的几个核心操作都在anchor\_head.py中实现,主要包括get\_anchors, anchor\_target(后续说明),函数get\_bboxes结合配置参数从rpn前向得到的
+候选框层RPN,RPNHead继承AnchorHead, 它的几个核心操作都在anchor\_head.py中实现,主要包括get\_anchors, anchor\_target见\ref{sub:anchorhead},函数get\_bboxes结合配置参数从rpn前向得到的
 2分类和位置预测结果中筛选出最终的proposals.
 
 get\_bboxes中先通过self.anchor\_generators[i].grid\_anchors()这个函数取到所有的anchor\_boxs,再通过self.get\_bboxes\_single()根据rpn前向的结果选出候选框,
@@ -258,6 +423,7 @@ get\_bboxes中先通过self.anchor\_generators[i].grid\_anchors()这个函数取
 得到的候选框最终由配置中train\_cfg的rcnn.assigner, rcnn.sampler进行标定和筛选,保持正负样本平衡和框的质量,方便优化.
 
 MaxIoUAssigner:
+\label{sub:MaxIoUAssigner}
 \begin{adjustwidth}{1cm}{0cm}
 \begin{itemize}
 	\item[1.] 所有候选框置-1
@@ -267,7 +433,37 @@ MaxIoUAssigner:
 \end{itemize}
 \end{adjustwidth}
 
-RandomSampler,保持设定的平衡比例,随机采样.其他采样待补.
+
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+	# 交并比矩阵(n,m), gt=n, bboxes=m
+	overlaps = bbox_overlaps(gt_bboxes, bboxes)
+	# 每个bbox和所有gt的最大交并比,(m,)
+	max_overlaps, argmax_overlaps = overlaps.max(dim=0)
+	# 每个gt和所有bbox的最大交并比
+	gt_max_overlaps, gt_argmax_overlaps = overlaps.max(dim=1)
+	# 1将所有bbox赋值为-1,注意new_full操作
+	assigned_gt_inds = overlaps.new_full(
+			(num_bboxes, ), -1, dtype=torch.long)
+	# 2交并比大于0同时小于负阈值的赋值为0
+	assigned_gt_inds[(max_overlaps >= 0)
+							 & (max_overlaps < self.neg_iou_thr)] = 0
+	# 将与gt交并比大于正阈值的赋值为1(可能没有)
+	pos_inds = max_overlaps >= self.pos_iou_thr
+	assigned_gt_inds[pos_inds] = argmax_overlaps[pos_inds] + 1
+	# 保证每个gt至少对应一个bbox
+	# 遍历gt,将与gt最近(max(iou))的bbox,将gt的label赋值给此bbox
+
+	for i in range(num_gts):
+			if gt_max_overlaps[i] >= self.min_pos_iou:
+				# 此判断较迷
+				max_iou_inds = overlaps[i, :] == gt_max_overlaps[i]
+				assigned_gt_inds[max_iou_inds] = i + 1 
+				# 与gt最大iou的bbox 赋值为i+1
+
+\end{lstlisting}
+
+RandomSampler,保持设定的平衡比例,随机采样.
 
 然后通过SingleRoIExtractor(roi\_extractors/single\_level.py)统一RoI
 Align四个尺度且大小不同的的proposals,使其大小为7*7(bbox)或14*14
@@ -297,12 +493,22 @@ RoIAlign在ops中,经cuda加速,详解待后.
 	return target_lvls
 \end{lstlisting}
 
+\subsubsection{RepPoints}
+	利用DCN特性,实现了检测的结构点表示方式的优化.
+
+\subsubsection{RetinaFace}
+
+
+
 \section{数据处理}
 \label{sec:detail}
-coco数据等格式，多格式的转换
+coco数据等格式，多格式的转换,增强检测算法的预处理.
 
-\section{模型结构}
-OneStage，TwoStage,其他结构的变体.
+
+\section{FP16}
+模型预测加速等.
+
+
 \section{训练pipeline}
 \label{trainpipeline}
 图见\ref{trainpipe_pic}注意它的四个层级.主要查看api/train.py, mmcv中的runner相关文件.
@@ -396,17 +602,21 @@ class CosineLrUpdaterHook(LrUpdaterHook):
 
 \section{更改模型}
 案例
+
 \section{新增模型}
-RetinaFace, BlazeFace, FaceBoxes等
+RetinaFace, FaceBoxes, RepPoints.(放一个完整代码即可)
+
+\section{numpy,torch某些基础函数}
+\label{sec:basefunc}
 
 \section{计划}
 \begin{itemize}
-	\item[1.] 基本骨架网络说明,ssd-vgg,将其和配置文件ssd300,ssd500中的head参数对齐
-	\item[2.] anchor target通用的和具体到某算法
-	\item [3.] neck层,fpn的扩展和变体
-	\item [4.] 损失函数基本和具体到maskrcnn head部分
-	\item [5.] Detectors中maskrcnn的RPNHead,bboxhead,中有关get\_anchors, anchor\_target函数部分
-	\item [6.] ops中的ROIAlign 
+	\item[1.] x
+	\item[2.] x
+	\item [3.] RetinaFace, FaceBoxes, RepPoints
+	\item [4.] 损失函数
+	\item [5.] x
+	\item [6.] ops中的ROIAlign,DCN
 \end{itemize}
 
 
