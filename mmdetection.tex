@@ -350,7 +350,7 @@ BoundedIoULoss, ArcLoss
 这节主要分析maskrcnn和reppoints,retinaFace三个算法.
 
 \subsubsection{maskrcnn}
-\label{sub:maskrcnn}
+\label{maskrcnn}
 以配置文件mask\_rcnn\_r50\_fpn\_1x.py为例说说twao\_stage的实现过程.
 配合two\_stage的forward\_train()函数和配置文件,即可.
 
@@ -617,7 +617,94 @@ RetinaFace, FaceBoxes, RepPoints.(放一个完整代码即可)
 	\item [4.] 损失函数
 	\item [5.] x
 	\item [6.] ops中的ROIAlign,DCN
+	\item [7.] 检测模型的简略综述
 \end{itemize}
+
+\section{检测模型的简略综述}
+检测算法是由一些基本的组件组合而成.这也是mmdection出现的原因.这章节会在不同算法系列中总结一些基础组件,最后再做个提取.
+\subsection{通用物体检测}
+按照物体编码方式可分为三类.矩形编码(anchor机制),结构点编码(RepPoints)和所有点编码(mask).
+\subsubsection{Yolo系列}
+yolo相对孤立,v1就不说了,v2,v3基本思想还是来源于resnet,fpn,ssd等.
+代码可参考 \href{https://github.com/ultralytics/yolov3}{yolov3}.
+
+与SSD的不同之处:
+\begin{itemize}
+	\item 根据数据聚类9个先验框,分成3个尺度,分别作为三个检测层的 base anchor.
+	\item 因为网络结构只有卷积和池化,所以可以做多尺度输入320-608,steps=32.
+	\item 基础网络DarkNet19,53较resnet更为轻量,主要是$1*1$卷积的大量使用.
+	\item 多尺度的处理方式是在每个尺度上均计算一次检测(yolo layer),这和ssd合并起来做统一处理不同.
+	\item 框回归编码不同(相对于网格中心的偏移量,物体由一个中心网格预测,当物体重合度高时,此假设不成立).
+	\item 网络结构实现方式大多采用配置文件解析(DarkNet).
+\end{itemize}
+
+\subsubsection{SSD系列}
+ssd是第一个包含了几乎所有的检测组件的算法(各种检测算法的所有组件集),故能在后续的发展中多次被更改,
+用于其他任务中,比如ctpn,textb
+oxes++,faceboxes等.代码可参考:\href{https://github.com/sgrvinod/a-PyTorch-Tutorial-to-Object-Detection}{SSD-Tutorial}手把手教你实现ssd,
+以及相关原理讲解. \href{https://github.com/amdegroot/ssd.pytorch}{ssd.pytorch} 
+最先看的ssd源码,简洁完完整.
+\href{https://github.com/lufficc/SSD}{maskrcnn-benchmark风格版ssd}.
+
+原始SSD:
+
+\begin{itemize}
+	\item 多尺度
+	\begin{itemize}
+		\item 不同尺度的feature map上生成anchor(比如:$300**2-> 38**2*4+19**2*6+10**2*6+5**2*6+3**2*4+1**2*4$),进行位置回归和类别判断.
+		\item 一个$m*n$大小的feature map,若每个cell(可以理解成物体的离散表示点)分配$k$个anchor,则每个cell输出$(c+4)*k*m*n$个预测值(class, box relative offset).
+		\item 注意每个cell其实是一个向量,长度为 channel of feature map,可以理解成一个物体的某一部分(或全部)的向量表示或者整体表示的一部分.
+		\item 事实上这里完成了两个任务,分类和位置回归,所以cell向量可能具有分段表示功效(这和权重共享是不矛盾的,共享的权重可能就具有可分离性). 
+		\item anchor计算损失函数前的有效编码:首先中心坐标在特征层上归一化(等同于相对于原图的归一化),尺度根据原图尺寸以及当前特征图相对原图的尺寸进行设计,比如第一特征层相对于原图的0.1,然后计算相对偏移量以及坐标和尺度的"等效"处理，尺度求对数.
+	\end{itemize}
+
+	\item 数据增强
+	\begin{itemize}
+		\item DistortImage: 修改图像本身的brightness, contrast, saturation, hue, reordering channels.
+		\item ExpandImage: 将DistortImage的图片用像素0进行扩展,同时以黑边的左上角为原点计算$[0,1]$的bbox的左上角和右下角两个点坐标.
+		\item BatchSampler: sampled\_bboxes的值是随机在$[0,1]$上生成的bbox，并且和某个gt\_bboxes的IOU在$[min, max]$之间
+		\item resize 到固定大小$300*300$，label也同时线性缩放.
+		\item 以0.5概率随机水平翻转, 或者crop等
+	\end{itemize}
+
+	\item 样本平衡
+	\begin{itemize}
+		\item 难例挖掘,正负样本1:3等.我的理解是制造更有效的优化空间(anchor是让优化空间变得合理).
+	\end{itemize}
+	
+	\item 损失函数 
+	\begin{itemize}
+		\item 利用GT box 给个生成的8732(可变)anchor打标签,筛选出有效优化对象,计算分类和回归值.
+	\end{itemize}
+
+	\item 后处理
+	\begin{itemize}
+		\item NMS, Soft-NMS, OHEM
+	\end{itemize}
+
+\end{itemize}
+
+以上五部分均是以后论文的改进点.比如特征提取基础结构,采用其他有效的分类模型resnet,或者轻量级的mobilenet等,或者替换在新的结构上替换一些结构组成算子,卷积,激活,BN等操作. 比如多尺度的FPN类似思想,融合不同特征层，这在一定程度上解决了重复框,小物体问题(将同一物体的不同尺度表达进行融合,当然能减缓底层表达能力不足的现象).这些有FSSD,RSSD(没有必要都要去看,检测类的文章,理清基本组件,花时间分析组件功能,做实验验证想法,就ok了)等.数据增强的方式各不相同,主要是提高数据的丰富性,增加模型的泛化能力,这个属于工程问题,基本方法都来源于传统的图像处理.样本平衡的扩展可参考mmdetection,用制造更有效的优化空间来理解,就可以随意发挥了.
+
+具体案例:
+
+FaceBoxes:
+
+textboxes++:
+
+
+\subsubsection{Fast RCNN系列}
+Mask R-CNN:
+
+\href{https://github.com/facebookresearch/maskrcnn-benchmark}{maskrcnn-benchmark}能学习的东西都在这里面了(仔细研读3遍). 
+Mask R-CNN = Faster R-CNN  with FCN on ROIs.其主要流程参见\ref{maskrcnn}.ROI Align原理:
+去掉了图像下采样到特征图的坐标量化,保持分数坐标,同时ROI分格池化时,对格子的坐标也取消量化,从而减少了坐标的二度漂移.若两次量化,最坏的情况,下采样5次,会有近64的位置偏移,这样会漏掉小目标.最后的池化采用双线性插值,原理就是每个点的像素值是其临近4个像素点的距离权重平均.
+
+Cascade RCNN发现只有proposal自身的阈值和训练器的训练阈值较为接近时,训练器的性能才最好.
+\subsubsection{Anchor Free 系列}
+FCOS
+
+\subsection{总结}
 
 
 \end{document}
