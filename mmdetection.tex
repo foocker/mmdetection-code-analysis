@@ -123,13 +123,32 @@ AME.register\_module方式装饰,新增.所有被注册的对象都是一个完�
 	\end{minipage}
 \end{figure}
 
+\begin{figure}[htbp]
+	\centering
+	\begin{minipage}[t]{0.48\textwidth}
+	\centering
+	\includegraphics[width=5cm, height=4cm]{./pic/HRNet.png}
+	\caption{hrnet}
+	\label{pichrnet}
+	\end{minipage}
+	\begin{minipage}[t]{0.48\textwidth}
+		\centering
+		\includegraphics[width=5cm,height=4cm]{./pic/MobileNetV2.png}
+		\caption{mobilenet}
+		\label{picmobilenet}
+	\end{minipage}
+\end{figure}
+
 % \begin{figure}[htbp]
 % 	\centering
 % 	\includegraphics[width=5cm, height=4cm]{./pic/ssd.png}
 % 	\caption{config maskrcnn}
 % \end{figure}
 
+\subsubsection{backbone的改进}
+backbone的改进主要有轻量和功能扩展。
 
+这里主要说说resnet.py中引进的dcn，gcb和gen\_attention模块。
 \subsection{Necks}
 \begin{figure}[htbp]
 	\centering
@@ -341,9 +360,111 @@ GHM算是对Fcoal改进,作者统计了样本的梯度信息,提出梯度均衡�
 \href{https://arxiv.org/abs/1711.00164}{BoundedIoULoss}.
 
 \subsubsection{实现解析}
-CrossEntropyLoss， SmoothL1Loss，Fcoalloss,GHMLoss, BalancedL1Loss, IoULoss,
-BoundedIoULoss, ArcLoss
+mmdet.models.losses里面实现了所有损失函数。
 
+losses.utils有两个基本函数，weight\_reduce\_loss和weighted\_loss，前者将返回的损失向量点乘一权重向量，再分别求和或者算平均值。后者为一
+装饰器，装饰你自己定义的损失函数，实现带权重效果。具体为先算自定义loss\_func，然后再weight\_reduce\_loss一下。其中weighted\_loss中的@functools.wraps
+装饰的好处是返回的函数保持被装饰函数名字。接下来逐一说明各个损失函数。
+
+CrossEntropyLoss，其理论来源有两点，信息论或极大似然估计，可参考花书。
+pytorch官方文档给的公式，明显看出是极大似然的写法。注意实际运算是张(向)量的形式。
+$\operatorname{loss}(x, \text { class })=-\log \left(\frac{\exp (x[\text { class }])}{\sum_{j} \exp (x[j])}\right)=
+-x[\text { class }]+\log \left(\sum_{j} \exp (x[j])\right)$，增加权重因子为
+$$\operatorname{loss}(x, \text { class })=
+w e i g h t[\text { class }]
+\left(-x[\text { class }]+\log \left(\sum_{j} \exp (x[j])\right)\right).$$
+在cross\_entropy\_loss.py中实现了三种交叉熵损失函数，binary\_cross\_ent
+ropy， mask\_cross\_entrop以及cross\_entropy，前两者相同点在于将标签扩展成one hot形式
+然后调用F.binary\_cross\_entropy\_with\_logits函数，不同点为mask没有乘权重向量，cross\_entropy调用F.cross\_entropy，并被weight\_reduce\_loss了。
+需要注意的点是，最终的CrossEntropyLoss中的loss\_weight参数是多任务中此Loss的权重。而weight\_reduce\_loss
+中的weight是各类别的权重。可以说前者和样本平衡有关，后者和任务平衡有关。
+
+SmoothL1Loss来源于FastRCNN，用于解决方框回归的不稳定问题(也许是优化速度)，由L2，L1演变而来。
+$$L_{1}=\begin{array}{l}
+	0.5 x^{2}, \quad|x|<1 \\
+	|x|-0.5, \quad x<-1 \text { or } x>1
+	\end{array}$$
+三者的关系，画个图其意自明：L2两边变化太快，对不好优化的anchor不友好(离群点)，L1 0点不可导，Smooth两边较为平缓。
+在smooth\_l1\_loss.py中，smooth\_l1\_loss被上述weighted\_loss装饰，
+实现代码比较简单:
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+diff = torch.abs(pred - target)
+loss = torch.where(diff < beta, 0.5 * diff * diff / beta,
+				   diff - 0.5 * beta)
+\end{lstlisting}
+注意这里的where实现了分段函数，所以其含义自明。
+
+BalancedL1Loss来自Libra R-CNN，为SmoothL1的改进。
+改进函数为
+$$
+L_{b}(x)=\left\{\begin{array}{ll}
+	\frac{\alpha}{b}(b|x|+1) \ln (b|x|+1)-\alpha|x| & \text { if }|x|<1 \\
+	\gamma|x|+C & \text { otherwise }
+	\end{array}\right.
+$$
+其梯度为：
+$$
+\frac{\partial L_{b}}{\partial x}=\left\{\begin{array}{ll}
+	\alpha \ln (b|x|+1) & \text { if }|x|<1 \\
+	\gamma & \text { otherwise }
+	\end{array}\right.
+$$
+其中$b=e^{\frac{\gamma}{\alpha}}$,使得函数连续。容易得到在 $|x|<1$ 附近的梯度比SmoothL1要大。
+具体分析可参考\href{https://zhuanlan.zhihu.com/p/64541760}{BalancedL1Loss}，代码和SmoothL1一致，故析略。
+
+Fcoalloss原理见上节，其扩展有\href{https://arxiv.org/pdf/1904.07850.pdf}{CenterNet}，GHM系列。
+因\_sigmoid\_focal\_loss由cpp,cu实现，故略(可看看debug版本)。 
+
+GHMLoss有GHMC, GHMR，分别作用于分类，回归。原理查看论文或者参考\href{https://zhuanlan.zhihu.com/p/80594704}{GHM}，
+其主要思想是简单和特难的样本均进行抑制，也算是FocalLoss的改进，析码略。
+
+剩下的IoULoss,BoundedIoULoss,GIoULoss等以iou的方式进行Box回归，含义自现。
+三者的细致分析(各自优缺点及关系)看原始论文。代码上根据如下公式，即可容易写出。
+Giou:
+\begin{equation*}
+\begin{array}{l}
+	I o U=\frac{|A \cap B|}{|A \cup B|} \\
+	G I o U=I o U-\frac{|C \backslash(A \cup B)|}{|C|}
+	\end{array}
+\end{equation*}其中$C$为$A, B$的闭包。
+在iou\_loss.py中，最终的iou\_loss为$-log(ious)$, giou\_loss为$1-gious$
+, boundedloss和SmoothL1Loss差不多，只是此时被求的变量$(dx,dy,dw,dh)$的编码方式变了。
+具体关系如下：
+
+论文中的分段函数为Huber loss
+$
+L_{\tau}(z)=\left\{\begin{array}{cc}
+	\frac{1}{2} z^{2} & |z|<\tau \\
+	\tau|z|-\frac{1}{2} \tau^{2} & \text { otherwise }
+	\end{array}\right.
+$
+和SmoothL1类似，但代码用的是带了一个$\beta$因子的SmoothL1。
+
+分量损失为
+$
+\text { cost }_{\mathrm{i}}=
+2 L_{1}\left(1-\mathrm{I} \mathrm{o} \mathrm{U}_{\mathrm{B}}\left(i, b_{t}\right)\right)
+, i \in \{x, y, w, h\}.$
+原始的$L1$(见FasterRCNN)定义为
+$$
+\begin{aligned}
+	&\operatorname{cost}_{x}=L_{1}\left(\frac{\Delta x}{w_{s}}\right)\\
+	&\operatorname{cost}_{\mathrm{w}}=L_{1}\left(\ln \left(\frac{w}{w_{t}}\right)\right)
+	\end{aligned}
+$$
+这里使用的
+$\mathrm{IoU}_{\mathrm{B}}$定义为:
+$$
+\begin{array}{l}
+	\operatorname{IoU}_{\mathrm{B}}\left(x, b_{t}\right)=\max \left(0, \frac{w_{t}-2|\Delta x|}{w_{t}+2|\Delta x|}\right) \\
+	\operatorname{IoU}_{\mathrm{B}}\left(w, b_{t}\right)=\min \left(\frac{w}{w_{t}}, \frac{w_{t}}{w}\right)
+	\end{array}.
+$$
+最终分别算出$x,y,w,h$的各自$IoU_B$"损失"，作为最终损失的分量，带入SmoothL1分段函数中即可。
+
+
+以上的代码中出现了new\_full,nonzero,numel,expand,where等常用函数。
 
 
 \subsection{Detectors}
@@ -499,7 +620,6 @@ RoIAlign在ops中,经cuda加速,详解待后.
 \subsubsection{RetinaFace}
 
 
-
 \section{数据处理}
 \label{sec:detail}
 coco数据等格式，多格式的转换,增强检测算法的预处理.
@@ -608,6 +728,7 @@ RetinaFace, FaceBoxes, RepPoints.(放一个完整代码即可)
 
 \section{numpy,torch某些基础函数}
 \label{sec:basefunc}
+torch相关:new\_full,nonzero,numel,expand,where见损失函数一节。
 
 \section{计划}
 \begin{itemize}
