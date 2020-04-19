@@ -125,30 +125,86 @@ AME.register\_module方式装饰,新增.所有被注册的对象都是一个完�
 
 \begin{figure}[htbp]
 	\centering
-	\begin{minipage}[t]{0.48\textwidth}
-	\centering
-	\includegraphics[width=5cm, height=4cm]{./pic/HRNet.png}
-	\caption{hrnet}
-	\label{pichrnet}
-	\end{minipage}
-	\begin{minipage}[t]{0.48\textwidth}
-		\centering
-		\includegraphics[width=5cm,height=4cm]{./pic/MobileNetV2.png}
-		\caption{mobilenet}
-		\label{picmobilenet}
-	\end{minipage}
+	\includegraphics[width=8cm,height=6cm]{./pic/MobileNetV2.png}
+	\caption{mobilenetv2}
+	\label{picmobilenet}
 \end{figure}
 
-% \begin{figure}[htbp]
-% 	\centering
-% 	\includegraphics[width=5cm, height=4cm]{./pic/ssd.png}
-% 	\caption{config maskrcnn}
-% \end{figure}
 
-\subsubsection{backbone的改进}
-backbone的改进主要有轻量和功能扩展。
+\subsubsection{backbone及改进}
 
-这里主要说说resnet.py中引进的dcn，gcb和gen\_attention模块。
+Resnt的backbone由BasicBlock，Bottleneck， make\_res\_layer构成，前两个均是基本的残差结构，以卷积核大小分别为
+1,3,1的顺序构件图，最后或接一下采样层，组成一个基础的残差block。
+make\_res\_layer中重复构造残差模块，增加感受野和特征的复杂度。
+
+backbone的改进主要有模型轻量和功能扩展。
+
+这里主要说说resnet.py中引进的dcn，gcb和gen\_attention等功能模块。
+从Bottleneck的\_inner\_forward可以看到，gen\_attention\_block加到kerner\_size=1,
+kerner\_size=3组(组:卷积，归一化，激活)之后,
+kerner\_size=1,planes扩展组之前。
+gcb加到planes扩展组之后，然后才是下采样。因dcn是替换卷积算子，其参数和基本卷积相同，因此你可以任意替换conv2d，
+只是试验表明，替换此处的kerner\_size=3组效果更好。
+
+代码参数说明，主要和fpn对齐部分，在config中按照如下对齐方式更改即可。
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+
+@BACKBONES.register_module
+class ResNet(nn.Module):
+	arch_settings = {
+		18: (BasicBlock, (2, 2, 2, 2)),    # (2, 2, 2, 2)各层残差块的重复数目
+		34: (BasicBlock, (3, 4, 6, 3)),
+		50: (Bottleneck, (3, 4, 6, 3)),
+		101: (Bottleneck, (3, 4, 23, 3)),
+		152: (Bottleneck, (3, 8, 36, 3))
+	}
+	def __init__(self,
+					depth,
+					in_channels=3,
+					num_stages=4,
+					strides=(1, 2, 2, 2),
+					dilations=(1, 1, 1, 1),
+					out_indices=(0, 1, 2, 3),
+					style='pytorch',
+					frozen_stages=-1,
+					conv_cfg=None,
+					norm_cfg=dict(type='BN', requires_grad=True),
+					norm_eval=True,
+					dcn=None,
+					stage_with_dcn=(False, False, False, False),
+					gcb=None,
+					stage_with_gcb=(False, False, False, False),
+					gen_attention=None,
+					stage_with_gen_attention=((), (), (), ()),
+					with_cp=False,
+					zero_init_residual=True):
+		super(ResNet, self).__init__()
+	# num_stages：下采样特征层数目
+	# strides：不同残差block的stride数
+	# out_indices： 需要的特征层索引，对齐fpn
+	# frozen_stages：冻结的残差层
+	# stage_with_dcn，stage_with_gcb，stage_with_gen_attention均需要和fpn层对齐
+
+	def forward(self, x):
+		# 首先是两个下采样:kernel_size=7和maxpool，此时尺度为原始1/4
+		x = self.conv1(x)
+		x = self.norm1(x)
+		x = self.relu(x)
+		x = self.maxpool(x)
+		# 然后是几个尺度减半的特征层 make_res_layer，对应fpn层
+		outs = []
+		for i, layer_name in enumerate(self.res_layers):
+			res_layer = getattr(self, layer_name)
+			x = res_layer(x)
+			if i in self.out_indices:
+				# out_indices 选取需要的层对应fpn层(通常index是连续的,除非数据特殊，刚好都只有一大一小物体)
+				outs.append(x)
+		return tuple(outs)
+\end{lstlisting}
+
+
+
 \subsection{Necks}
 \begin{figure}[htbp]
 	\centering
@@ -157,12 +213,20 @@ backbone的改进主要有轻量和功能扩展。
 	\label{picfpn}
 \end{figure}
 
-\subsubsection{多尺度结构}
-主要分析fpn结构的变体,比如ssd相关的FaceBoxes,HRNet等.
+\begin{figure}[htbp]
+	\centering
+	\includegraphics[width=7cm,height=4cm]{./pic/BiFPN.png}
+	\caption{bifpn}
+	\label{picbifpn}
+\end{figure}
 
+
+\subsubsection{多尺度结构}
+FPN,BFPN BiFPN, HRFPN等。
 
 \subsection{Heads}
-Heads 主要包含了是三部分,anchor\_heads, bbox\_heads, mask\_heads,anchor是two-stage的rpn部分或者one-stage的头部.最终的损失函数均在这里实现.
+Heads 主要包含了是三部分,anchor\_heads, bbox\_heads, mask\_heads,
+anchor是two-stage的rpn部分或者one-stage的头部.最终的损失函数均在这里实现.
 
 \subsubsection{AnchorHead}
 \label{sub:anchorhead}
@@ -325,6 +389,13 @@ AnchorGenerator类, init()函数需要如下参数:
 \end{itemize}
 
 
+\subsubsection{RetinaHead}
+后补。
+\subsubsection{GuidedHead}
+guided\_anchor\_head.py, ga\_retina\_head.py
+
+\subsubsection{FCOSHead}
+若其他人补。
 
 \subsection{Losses}
 \label{sec:loss}
@@ -618,11 +689,251 @@ RoIAlign在ops中,经cuda加速,详解待后.
 	利用DCN特性,实现了检测的结构点表示方式的优化.
 
 \subsubsection{RetinaFace}
-
+再说，和ssd重复较大。
 
 \section{数据处理}
 \label{sec:detail}
-coco数据等格式，多格式的转换,增强检测算法的预处理.
+\subsection{检测分割数据}
+看看配置文件，数据相关的有data dict，里面包含了train,val,test的路径信息，用于数据类初始化。
+然后就是pipeline，将各个函数及对应参数以字典形式放到列表里面，是对pytorch原装的transforms+compose，
+在检测，分割相关数据上的一次封装，使得形式更加统一。
+
+从builder.py中build\_dataset函数能清晰的看到，构建数据有三种方式，ConcatDataset，RepeatDataset和从注册器中提取。
+
+其中dataset\_wrappers.py中ConcatDataset和RepeatDataset意义自明。前者继承自pytorch原始的ConcatDataset，
+将多个数据集整合到一起，将不同序列(可参考\href{https://docs.python.org/zh-cn/3/library/collections.abc.html}
+{容器的抽象基类})的长度相加，\_\_getitem\_\_函数对应index替换一下。
+后者就是单个数据类(序列)的多次重复。就功能来说，前者提高数据丰富度，后者可解决数据太少使得loading时间长的问题。
+而与注册相关的，被注册的数据类在datasets下大家熟知的数据类型的py文件中。基类为custom.py中的CustomDataset，coco继承自它，
+cityscapes继承自coco，xml\_style的XMLDataset继承CustomDataset，然后wider\_face，voc均继承自XMLDataset。因此这里先分析一下CustomDataset。
+
+
+CustomDataset 记录数据路径等信息，解析标注文件，将每一张图的所有信息以字典作为数据结构存在results中。然后进入pipeline，也即数据增强相关操作。
+从下面代码可以清晰的看到。这里数据结构的选取需要注意一下，字典结构，在数据增强库albu中也是如此处理，因此可以快速替换albu中的算法。
+另外每个数据类增加了各自的evaluate函数。evaluate基础函数在mmdet.core.evaluation中，后做补充。
+
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+	self.pipeline = Compose(pipeline)   
+	# Compose是实现了__call__方法的类，其作用是使实例能够像函数一样被调用，同时不影响实例本身的生命周期
+def pre_pipeline(self, results):
+	# 扩展字典信息
+	results['img_prefix'] = self.img_prefix
+	results['seg_prefix'] = self.seg_prefix
+	results['proposal_file'] = self.proposal_file
+	results['bbox_fields'] = []
+	results['mask_fields'] = []
+	results['seg_fields'] = []
+
+def prepare_train_img(self, idx):
+	img_info = self.img_infos[idx]
+	ann_info = self.get_ann_info(idx)
+	# 基本信息，初始化字典
+	results = dict(img_info=img_info, ann_info=ann_info)
+	if self.proposals is not None:
+		results['proposals'] = self.proposals[idx]
+	self.pre_pipeline(results)
+	return self.pipeline(results)    # 数据增强
+
+def __getitem__(self, idx):
+	if self.test_mode:
+		return self.prepare_test_img(idx)
+	while True:
+		data = self.prepare_train_img(idx)
+		if data is None:
+			idx = self._rand_another(idx)
+			continue
+		return data
+\end{lstlisting}
+
+mmdet的数据处理，字典结构，pipeline，evaluate是三个关键部分。其他所有类的文件解析部分，数据筛选等，看看即可。
+因为我们知道，pytorch读取数据，是将序列转化为迭代器后进行io操作的。所以在dataset下除了pipelines外还有loader
+文件夹，里面实现了分组，分布式分组采样方法，以及调用了mmcv中的collate函数，且build\_dataloader封装的DataLoader最后在
+train\_detector中被调用，这部分将在后面补充，这里说说pipelines。所有pipelines的注册函数在\_\_init\_\_.py中可见。
+
+返回maskrcnn的配置文件，可以看到，训练和测试的不同，LoadAnnotations，MultiScaleFlipAug，DefaultFormatBundle和Collect。
+虽然测试没有LoadAnnotations，实际上根据前面的CustomDataset可知道，它仍然需要标注文件。这和inference的pipeline是不同的。
+
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+# 序列中的dict可以随意删减，增加，所谓数据增强调参
+train_pipeline = [
+    dict(type='LoadImageFromFile'),
+    dict(type='LoadAnnotations', with_bbox=True, with_mask=True),
+    dict(type='Resize', img_scale=(1333, 800), keep_ratio=True),
+    dict(type='RandomFlip', flip_ratio=0.5),
+    dict(type='Normalize', **img_norm_cfg),
+    dict(type='Pad', size_divisor=32),
+    dict(type='DefaultFormatBundle'),
+    dict(type='Collect', keys=['img', 'gt_bboxes', 'gt_labels', 'gt_masks']),
+]
+
+test_pipeline = [
+    dict(type='LoadImageFromFile'),
+    dict(
+        type='MultiScaleFlipAug',
+        img_scale=(1333, 800),
+        flip=False,
+        transforms=[
+            dict(type='Resize', keep_ratio=True),
+            dict(type='RandomFlip'),
+            dict(type='Normalize', **img_norm_cfg),
+            dict(type='Pad', size_divisor=32),
+            dict(type='ImageToTensor', keys=['img']),
+            dict(type='Collect', keys=['img']),
+        ])
+]
+\end{lstlisting}
+这些所有操作被Compose串联起来(列表是序列结构)。
+
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+@PIPELINES.register_module
+class Compose(object):
+
+	def __init__(self, transforms):
+		assert isinstance(transforms, collections.abc.Sequence)
+		self.transforms = []
+		for transform in transforms:
+			if isinstance(transform, dict):
+				transform = build_from_cfg(transform, PIPELINES)
+				self.transforms.append(transform)
+			elif callable(transform):
+				self.transforms.append(transform)
+			else:
+				raise TypeError('transform must be callable or a dict')
+
+	def __call__(self, data):
+		for t in self.transforms:
+			data = t(data)
+			if data is None:
+				return None
+		return data
+\end{lstlisting}
+上面代码能清晰的看到，配置文件中pipeline中的字典传入build\_from\_cfg函数，逐一实现了各个增强类。
+扩展的增强类均需实现\_\_call\_\_方法，这和pytorch原始方法是一致的。
+
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+def build_from_cfg(cfg, registry, default_args=None):
+	assert isinstance(cfg, dict) and 'type' in cfg
+	assert isinstance(default_args, dict) or default_args is None
+	args = cfg.copy()
+	obj_type = args.pop('type')
+	if mmcv.is_str(obj_type):
+		# 从注册类中拿出obj_type类
+		obj_cls = registry.get(obj_type)
+		if obj_cls is None:
+			raise KeyError('{} is not in the {} registry'.format(
+				obj_type, registry.name))
+	elif inspect.isclass(obj_type):
+		obj_cls = obj_type
+	else:
+		raise TypeError('type must be a str or valid type, but got {}'.format(
+			type(obj_type)))
+	if default_args is not None:
+		# 增加一些新的参数
+		for name, value in default_args.items():
+			args.setdefault(name, value)
+	return obj_cls(**args)    # **args是将字典解析成位置参数(k=v)。
+\end{lstlisting}
+
+有了以上认识，重新梳理一下pipelines的逻辑，由三部分组成，load，transforms，和format。
+load相关的LoadImageFromFile，LoadAnnotations都是字典results进去，字典results出来。具体代码看下便知，
+LoadImageFromFile增加了'filename'，'img'，'img\_shape'，'ori\_shape','pad\_shape',
+'scale\_factor','img\_norm\_cfg'字段。其中img是numpy格式。LoadAnnotations从results['ann\_info']中解析出bboxs,masks,labels等信
+息。注意coco格式的原始解析来自pycocotools，包括其评估方法，这里关键是字典结构。
+transforms中的类作用于字典的values，也即数据增强。format中的DefaultFormatBundle是将数据转成mmcv扩展的容器类格式DataContainer。
+另外Collect会根据不同任务的不同配置，从results中选取只含keys的信息生成新的字典，具体看下该类帮助文档。
+这里看一下从numpy转成tensor的代码:
+
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+def to_tensor(data):
+    """Convert objects of various python types to :obj:`torch.Tensor`.
+
+    Supported types are: :class:`numpy.ndarray`, :class:`torch.Tensor`,
+    :class:`Sequence`, :class:`int` and :class:`float`.
+    """
+    if isinstance(data, torch.Tensor):
+        return data
+    elif isinstance(data, np.ndarray):
+        return torch.from_numpy(data)
+    elif isinstance(data, Sequence) and not mmcv.is_str(data):
+        return torch.tensor(data)
+    elif isinstance(data, int):
+        return torch.LongTensor([data])
+    elif isinstance(data, float):
+        return torch.FloatTensor([data])
+    else:
+        raise TypeError('type {} cannot be converted to tensor.'.format(
+			type(data)))
+	以上代码告诉我们，基本数据类型，需掌握。
+\end{lstlisting}
+
+那么DataContainer是什么呢？它是对tensor的封装，将results中的tensor转成DataContainer格式，实际上只是增加了几个property函数，
+cpu\_only，stack，padding\_value，pad\_dims，其含义自明，以及size，dim用来获取数据的维度，形状信息。
+考虑到序列数据在进入DataLoader时，需要以batch方式进入模型，那么通常的collate\_fn会要求tensor数据的形状一致。但是这样不是很方便，
+于是有了DataContainer。它可以做到载入GPU的数据可以保持统一shape，并被stack，也可以不stack，也可以保持原样，或者在非batch维度上做pad。
+当然这个也要对default\_collate进行改造，mmcv在parallel.collate中实现了这个。
+
+也许可以看看通常的collate\_fn，它是DataLoader中将序列dataset组织成batch大小的函数。
+
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+def collate_fn_1(batch):
+	# 这是默认的，明显batch中包含相同形状的img\_tensor和label
+	return tuple(zip(*batch))
+	
+def coco_collate_2(batch):
+	# 传入的batch数据是被albu增强后的(字典结构)
+    imgs = [s['image'] for s in batch]    # tensor, h, w, c->c, h, w , handle at transform in __getitem__
+    annots = [s['bboxes'] for s in batch]
+    labels = [s['category_id'] for s in batch]
+
+	# 以当前batch中图片annot数量的最大值作为标记数据的第二维度值，空出的就补-1。
+    max_num_annots = max(len(annot) for annot in annots)
+    annot_padded = np.ones((len(annots), max_num_annots, 5))*-1
+
+    if max_num_annots > 0:
+        for idx, (annot, lab) in enumerate(zip(annots, labels)):
+            if len(annot) > 0:
+                annot_padded[idx, :len(annot), :4] = annot
+				# 不同模型，损失值计算可能不同，这里ssd结构需要改为xyxy格式并且要做尺度归一化
+				# 这一步完全可以放到\_\_getitem\_\_中去，只是albu的格式需求问题。
+                annot_padded[idx, :len(annot), 2] += annot_padded[idx, :len(annot), 0]    #  xywh-->x1,y1,x2,y2 for general box,ssd target assigner
+                annot_padded[idx, :len(annot), 3] += annot_padded[idx, :len(annot), 1]    # contains padded -1 label
+                annot_padded[idx, :len(annot), :] /=  640    # priorbox for ssd primary target assinger
+                annot_padded[idx, :len(annot), 4] = lab
+	return torch.stack(imgs, 0), torch.FloatTensor(annot_padded)
+	
+def detection_collate_3(batch):
+    targets = []
+    imgs = []
+    for _, sample in enumerate(batch):
+        for _, img_anno in enumerate(sample):
+            if torch.is_tensor(img_anno):
+                imgs.append(img_anno)
+            elif isinstance(img_anno, np.ndarray):
+                annos = torch.from_numpy(img_anno).float()
+                targets.append(annos)
+    return torch.stack(imgs, 0), targets    # 做了stack， DataContainer可以不做stack
+\end{lstlisting}
+
+以上就是数据处理的相关内容。
+最后再用DataLoader封装拆成迭代器，其相关细节，sampler等就略去了。
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+data_loader = DataLoader(
+	dataset,
+	batch_size=batch_size,
+	sampler=sampler,
+	num_workers=num_workers,
+	collate_fn=partial(collate, samples_per_gpu=imgs_per_gpu),
+	pin_memory=False,
+	worker_init_fn=init_fn,
+	**kwargs)
+\end{lstlisting}
 
 
 \section{FP16}
@@ -631,6 +942,7 @@ coco数据等格式，多格式的转换,增强检测算法的预处理.
 
 \section{训练pipeline}
 \label{trainpipeline}
+\subsection{训练逻辑}
 图见\ref{trainpipe_pic}注意它的四个层级.主要查看api/train.py, mmcv中的runner相关文件.
 % 这里说说非分布训练模式\_non\_dist\_train.
 主要两个类:Runner和Hook
@@ -721,22 +1033,34 @@ class CosineLrUpdaterHook(LrUpdaterHook):
 其中base\_lr为初始学习率,target\_lr为学习率衰减的上界,而当前学习率正如函数的返回表达式.
 
 \section{更改模型}
-案例
+\subsection{增加模块}
+本身就包含了很多更改配置文件。
+\subsection{模型瘦身}
+替换backbone。
+
+\section{抽离模型}
+\subsection{retinanet\_resnet18}
+主要注意点。
 
 \section{新增模型}
-RetinaFace, FaceBoxes, RepPoints.(放一个完整代码即可)
+\subsection{centernet}
+直接抽离一个就行了。
 
 \section{numpy,torch某些基础函数}
 \label{sec:basefunc}
+\subsection{损失函数部分}
 torch相关:new\_full,nonzero,numel,expand,where见损失函数一节。
+\subsection{模型实现部分}
+待补。
+\subsection{数据类部分}
+待补。
 
 \section{计划}
 \begin{itemize}
-	\item[1.] x
-	\item[2.] x
-	\item [3.] RetinaFace, FaceBoxes, RepPoints
-	\item [4.] 损失函数
-	\item [5.] x
+	\item [0.] datasets
+	\item [1.] 更改模型
+	\item [2.] 抽离模型
+	\item [3.] 新增模型centernet 
 	\item [6.] ops中的ROIAlign,DCN
 	\item [7.] 检测模型的简略综述
 \end{itemize}
