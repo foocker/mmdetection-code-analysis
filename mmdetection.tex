@@ -1044,8 +1044,37 @@ class CosineLrUpdaterHook(LrUpdaterHook):
 
 \section{新增模型}
 \subsection{centernet}
-直接抽离一个就行了。
+先看原始论文Objects as Points以及官方代码。
+然后
+mmsdet/centernet/core 下的gaussian\_radius函数的解读可参考
+\href{https://zhuanlan.zhihu.com/p/96856635}{centernet heatmap解读}，
+对推广的FocalLoss的更细致的分析可参考
+\href{https://zhuanlan.zhihu.com/p/66048276}{centernet解读}，
+想做一些其他任务尝试的可参考
+\href{https://zhuanlan.zhihu.com/p/76378871}{centernet 一些尝试}。
 
+\subsection{代码说明}
+这里只是将mmdet的注册方式和配置文件类拿来用了一下，
+从原始代码\href{https://github.com/xingyizhou/CenterNet}{centernet office code}
+将需要的部分抽离出来，将pose模型改成了backbone+heathead结合成HeatMap的形式，其他文件做了和自己对mmdet的理解保持一致方面的些调整。
+很多部分没有按照mmdet的方式去改写，想了下改动有点大，数据，pipeline，训练方式等，就算了。
+
+datasets将原始的数据类\_\_getitem\_\_分开实现的方式合并了，原始这样实现主要是不同的方向不同的getitem所致吧。ops里的dcn等就没有加进来了。
+这个有参考抽离模型一节。
+
+一些说明点：
+\begin{itemize}
+	\item[0] 没有fpn， resnet的stem\_layer出来后，做了三次下采样，然后又三次转置卷积回去了，也就是得到了heatmap特征图。
+	\item[1] dcn替换在转置卷积部分
+	\item[2] detector中的base\_detector， cdetdector只是用来测试的
+	\item[3] loss 的实现上，张量的选取 tensor[index] 没有tensor * mask速度快
+	\item[4] 核心地方在core中，这和mmdet中anchor相关的意思一致，core/imgage.py中的射影点是原始图scale后的中心点，中心点关于scale/2左移，
+	以及这两点关于图像原点组成的一个三角形(见get\_3rd\_point)。
+	\item[5] \_\_getitem\_\_中将输入图像射影到(512, 512)大小(2**n)，然后在构造的512/4=128大小的heatmap mask上赋值对应的hm，wh，reg，
+	其中hm是将原始框射影到128大小的heatmap mask上，根据对应的框中心，进行赋值；wh就是射影后的w，h值，reg为中心向上取整后的误差，也即中心偏移量。
+\end{itemize}
+
+整体上centernet的思想是非常简洁的，效果也很好，以及后续的centertrack的end2end式追踪方案，不过后者的前后帧处理方式优化点似乎较多。
 \section{numpy,torch某些基础函数}
 \label{sec:basefunc}
 \subsection{损失函数部分}
@@ -1057,12 +1086,7 @@ torch相关:new\_full,nonzero,numel,expand,where见损失函数一节。
 
 \section{计划}
 \begin{itemize}
-	\item [0.] datasets
-	\item [1.] 更改模型
-	\item [2.] 抽离模型
-	\item [3.] 新增模型centernet 
-	\item [6.] ops中的ROIAlign,DCN
-	\item [7.] 检测模型的简略综述
+	\item [0.]  待补充
 \end{itemize}
 
 \section{检测模型的简略综述}
