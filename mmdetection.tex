@@ -105,7 +105,7 @@ AME.register\_module方式装饰,新增.所有被注册的对象都是一个完�
 
 \newpage
 \subsection{Backbone}
-\label{backbone}
+\label{backbones}
 
 \begin{figure}[htbp]
 	\centering
@@ -125,21 +125,105 @@ AME.register\_module方式装饰,新增.所有被注册的对象都是一个完�
 
 \begin{figure}[htbp]
 	\centering
+	\begin{minipage}[t]{0.48\textwidth}
+	\centering
+	\includegraphics[width=6cm,height=8cm]{./pic/ResNeSt.png}
+	\caption{ResNeSt}
+	\label{picresnest}
+	\end{minipage}
+	\begin{minipage}[t]{0.48\textwidth}
+		\centering
+		\includegraphics[width=7.5cm,height=5cm]{./pic/ResNeSt_SE_Sk.png}
+		\caption{ResNeSt\_SE\_SK}
+		\label{picresnest_se_sk}
+	\end{minipage}
+\end{figure}
+
+
+\begin{figure}[htbp]
+	\centering
 	\includegraphics[width=8cm,height=6cm]{./pic/MobileNetV2.png}
 	\caption{mobilenetv2}
 	\label{picmobilenet}
 \end{figure}
 
-
 \subsubsection{backbone及改进}
 
-Resnt的backbone由BasicBlock，Bottleneck， make\_res\_layer构成，前两个均是基本的残差结构，以卷积核大小分别为
-1,3,1的顺序构件图，最后或接一下采样层，组成一个基础的残差block。
-make\_res\_layer中重复构造残差模块，增加感受野和特征的复杂度。
+出于对\href{https://en.wikipedia.org/wiki/Universal_approximation_theorem}{Universal approximation theorem}的考察，
+人们人为加深网络，在复杂问题上会带来更好的效果，但实验情况并非如此，于是
+2015年\href{https://arxiv.org/abs/1512.03385}{ResNet}出现，旨在解决模型网络加深带来的性能下降问题(degradation problem)。
+其结构参数见\ref{picresnet}。
+其中
+$
+\left[\begin{array}{l}
+	3 \times 3,64 \\
+	3 \times 3,64
+\end{array}\right] 
+$
+为Basicbolck基础块，
+$
+\left[\begin{array}{c}
+	1 \times 1,64 \\
+	3 \times 3,64 \\
+	1 \times 1,256
+\end{array}\right] 
+$
+为Bottleneck基础块，后接池化，全连接和
+概率softmax映射，Bottleneck计算量为Basicbolck的5.9\%，池化替代全连接，更本质，一来计算量极大减小，二来过滤或者综合
+出了更有效的特征。一点需要注意一下，基础块都$\times$了一个数，重复计算可以增加感受野，
+同时增加了非线性算算子个数，能提取更抽象的特征，因为上下层尺度只减小了一半，所以stride=2只会在重复块中的某
+一个上做操作，这个是可以调节的。
 
-backbone的改进主要有模型轻量和功能扩展。
+那么ResNet是怎么解决梯度消失问题的呢？由Skip Connection组成的残差块(residual blocks)。
 
-这里主要说说resnet.py中引进的dcn，gcb和gen\_attention等功能模块。
+比如将第$l$层到$l+1$层的激活函数改到addition之前(参考\href{https://arxiv.org/abs/1603.05027}{ResNetV2})
+的残差模块的表示方式:
+$
+\mathbf{x}_{l+1}=\mathbf{x}_{l}+\mathcal{F}\left(\mathbf{x}_{l}, \mathcal{W}_{l}\right)
+$，
+递归形式
+$
+\mathbf{x}_{L}=\mathbf{x}_{l}+\sum_{i=l}^{L-1} \mathcal{F}\left(\mathbf{x}_{i}, \mathcal{W}_{i}\right)
+$，
+则其梯度如下:
+$$
+\frac{\partial loss}{\partial \mathbf{x}_{l}}=\frac{\partial loss}{\partial \mathbf{x}_{L}}
+ \frac{\partial \mathbf{x}_{L}}{\partial \mathbf{x}_{l}}=\frac{\partial loss}{\partial 
+ \mathbf{x}_{L}}\left(1+\frac{\partial}{\partial \mathbf{x}_{l}} \sum_{i=l}^{L-1} 
+ \mathcal{F}\left(\mathbf{x}_{i}, \mathcal{W}_{i}\right)\right)
+$$
+从BP公式我们知道梯度消失来源于梯度向量叠乘后太小，这里均有+1，极大抑制了梯度消失问题。
+
+ResNet的改进文章有很多，主要可分为模型性能，模型轻量和功能扩展。如上V2，\href{https://arxiv.org/pdf/1812.01187.pdf}{Bag}
+包含了性能，轻量上的改进，而\href{https://hangzhang.org/files/resnest.pdf}{resnest}集成了三方面的改进。
+resnest结构见\ref{picresnest_se_sk}，从结构图基本可以看到该残差模块的含义。现'按图索骥'，给出对应的公式(对比论文)，
+即可完成清晰的理解。
+
+首先对输入特征图按channel分解成$G=KR$部分，其中$K$是cardinal group数，$R$是radix group数，一句话，组中组。
+每个原子特征图经过$F_i$映射成$U_i$， $i \in \{1, 2, ..., G\}$。从图中能看到$F_i$为一个$1\times 1, 3 \times 3$卷积组成，
+这里好奇为何不是131结构，然后一个$R$小组接一个Split Attention结构，然后$K$个Split Attention 结果concatente在一起和输入图
+相加，组成一个残差块。图中有个细节，$c, c'$，这个也是channel降维减小计算量吧(出于这个考虑，也许可以圆一下为何不是131结构)。
+$K$个$R$基组经过$F$映射后做求和处理得到$K$基组单位元的表示，$\hat{U}^{k}=\sum_{j=R(k-1)+1}^{R k} U_{j}$，其中
+$\hat{U}^{k} \in \mathbb{R}^{H \times W \times C / K}$，每个$K$特征图在channel维度上做一个全局池化得到
+该特征图的Global contextual information $s^{k} \in \mathbb{R}^{C / K}$，其中第$c$个channle 
+$s_{c}^{k}=\frac{1}{H \times W} \sum_{i=1}^{H} \sum_{j=1}^{W} \hat{U}_{c}^{k}(i, j)$，
+这些Global contextual information做一个全连接映射$\mathcal{G}$，得到$K$组中每个$R$组中各特征的channel的重要系数$a_{i}^{k}(c)$，
+$$
+a_{i}^{k}(c)=\left\{\begin{array}{ll}
+	\frac{\exp \left(\mathcal{G}_{i}^{c}\left(s^{k}\right)\right)}{\sum_{j=0}^{R} \exp 
+	\left(\mathcal{G}_{j}^{c}\left(s^{k}\right)\right)} & \text { if } R>1 \\
+	\frac{1}{1+\exp \left(-\mathcal{G}_{i}^{c}\left(s^{k}\right)\right)} & \text { if } R=1
+\end{array}\right.
+$$
+最后用此系数加权求和$R$组各特征图$U$，其中第$c$ channel为
+$V_{c}^{k}=\sum_{i=1}^{R} a_{i}^{k}(c) U_{R(k-1)+i}$，
+得到Attention后的$K$组结果，然后concat一下得到映射特征，即$V=\operatorname{Concat}\left\{V^{1}, V^{2}, \ldots V^{K}\right\}$，
+最后执行Skip Connection，$Y = V + X$得到残差块的最终输出。$X$上可做操作，可调节。
+
+以上基本囊括了ResNet的改进内容。接着说说mmdet的代码部分。
+
+代码上，Resnet由BasicBlock，Bottleneck，make\_res\_layer构成。其中make\_res\_layer重复构造残差模块。
+需要说明的是在resnet.py中引进了dcn，gcb和gen\_attention等功能模块。
 从Bottleneck的\_inner\_forward可以看到，gen\_attention\_block加到kerner\_size=1,
 kerner\_size=3组(组:卷积，归一化，激活)之后,
 kerner\_size=1,planes扩展组之前。
@@ -202,7 +286,6 @@ class ResNet(nn.Module):
 				outs.append(x)
 		return tuple(outs)
 \end{lstlisting}
-
 
 
 \subsection{Necks}
@@ -1083,6 +1166,19 @@ torch相关:new\_full,nonzero,numel,expand,where见损失函数一节。
 待补。
 \subsection{数据类部分}
 待补。
+
+\section{版本变化说明}
+\subsection{v2.0}
+2.0相对于1.x版本，从代码上主要有这些改变:
+\begin{itemize}
+	\item[1.] core内部做了一些改写，比如anchor中的tagret移走了。
+	\item[2.] 数据类做了更彻底的分解，将1.x版本的loader中的sample分离成和pipeline同级别，data\_loader放到数据类中的builder，结构更清晰。
+	\item[3.] models中anchor\_heads改为dense\_heads；bbox\_heads, mask\_heads等two stage 相关的合并到roi\_heads中(和2思想一致)
+	\item[4.] 所有registry.py均合并到builder.py中，更为简洁。
+	\item[5.] necks增加了pafpn, detectors增加了fsaf,core/mask增加了分割数据结构，bbox增加了coder,抽象了下bbox的编码解码, iou\_calculators。
+	\item[6.] 配置文件采用了继承的方式 。
+	\item[7.] 优化了训练，测试流程，速度提升明显，版本支持pytorch1.5，1.2以下均不在支持，定制化模块做了优化。
+\end{itemize}
 
 \section{计划}
 \begin{itemize}
