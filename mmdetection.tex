@@ -1119,11 +1119,14 @@ class CosineLrUpdaterHook(LrUpdaterHook):
 \subsection{增加模块}
 本身就包含了很多更改配置文件。
 \subsection{模型瘦身}
-替换backbone。
+已有模型参数思路:各自参数往小的方向改，比如结构的重复次数，channel的数目，或者采用更多的$1*1$替换$3*3$，甚至可使用$m*n $联合
+$n*m$替换$m*m$卷积等。检测模型基本组件(mmdet中的理解)替换:backbone更改为熟知的轻量backbone，比如mobilev2。自行设计思路:这就考虑任务特性，自身对
+模型的认识水平和经验问题了，后面补充一个样例，作为参考。
+
 
 \section{抽离模型}
 \subsection{retinanet\_resnet18}
-主要注意点。
+只需要将需要的部分代码抽离出来，作为单独的inference模型，可参考代码retinanet\_resnet18。
 
 \section{新增模型}
 \subsection{centernet}
@@ -1269,7 +1272,442 @@ Cascade RCNN发现只有proposal自身的阈值和训练器的训练阈值较为
 \subsubsection{Anchor Free 系列}
 FCOS
 
+
 \subsection{总结}
 
+
+\section{官方文档2.0伪译}
+2.0相比1.x，就代码组织上，在模块化这方面有了更好的贯彻。能拆分的就拆分，比如配置文件，数据的信息整合、变换、采样迭代，
+以前版本命名不严格的一律改掉， 比如anchor\_heads。
+\subsection{配置系统}
+1.x版本是将所有配置信息放到一个x.py配置文件中，2.0增加了配置文件的模块化和继承能力，这样在实验中能提高组合不同部分的效率。
+执行　python tools/print\_config.py /PATH/TO/CONFIG 能看到配置信息。--options xxx.yyy=zzz  可看到更新信息。
+
+基础配置文件在config/\_base\_中，有dataset, model, schedule, default\_runtime四个部分，对应1.x版本单个配置文件的
+不同部分。
+
+
+\subsection{使用预训练模型}
+将coco数据训练的模型作为CitySpace等数据预训练模型，需要做以下五处改动
+
+\subsubsection{继承基础配置文件}
+基础模型继承自mask\_rcnn\_r50\_fpn，数据继承自cityscapes风格，训练schedules继承自默认的default\_runtime，在
+配置文件顶部增加如下代码:
+
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+
+	_base_ = [
+		'../_base_/models/mask_rcnn_r50_fpn.py',
+		'../_base_/datasets/cityscapes_instance.py', '../_base_/default_runtime.py'
+	]
+	
+\end{lstlisting}
+
+\subsubsection{更改头部}
+如果新旧模型的类别不同，则需要改一下类别数目。
+
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+
+	model = dict(
+    pretrained=None,
+    roi_head=dict(
+        bbox_head=dict(
+            type='Shared2FCBBoxHead',
+            in_channels=256,
+            fc_out_channels=1024,
+            roi_feat_size=7,
+            num_classes=8,　　　　# new num_classes
+            target_means=[0., 0., 0., 0.],
+            target_stds=[0.1, 0.1, 0.2, 0.2],
+            reg_class_agnostic=False,
+            loss_cls=dict(
+                type='CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0),
+            loss_bbox=dict(type='SmoothL1Loss', beta=1.0, loss_weight=1.0)),
+        mask_head=dict(
+            type='FCNMaskHead',
+            num_convs=4,
+            in_channels=256,
+            conv_out_channels=256,
+            num_classes=8,
+            loss_mask=dict(
+                type='CrossEntropyLoss', use_mask=True, loss_weight=1.0)))
+	
+\end{lstlisting}
+
+预训练的模型权重除最后的预测层不会加载预用模型权值，其他均会被加载。
+
+\subsubsection{更改数据}
+仿照VOC, WIDER FACE, COCO and Cityscapes 数据类重写自己的数据整合方式。改一下数据类的名字即可。
+具体改写细节见下小节。
+
+\subsubsection{改写训练schedule}
+
+优化器，训练超参数等的修改。
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+
+	# optimizer
+	# lr is set for a batch size of 8
+	optimizer = dict(type='SGD', lr=0.01, momentum=0.9, weight_decay=0.0001)
+	optimizer_config = dict(grad_clip=None)
+	# learning policy
+	lr_config = dict(
+		policy='step',
+		warmup='linear',
+		warmup_iters=500,
+		warmup_ratio=0.001,
+		# [7] yields higher performance than [6]
+		step=[7])
+	total_epochs = 8  # actual epoch = 8 * 8 = 64
+	log_config = dict(interval=100)
+
+\end{lstlisting}
+
+
+\subsubsection{使用预训练模型}
+
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+load_from = 'https://s3.ap-northeast-2.amazonaws.com/open-mmlab/mmdetection/models/mask_rcnn_r50_fpn_2x_20181010-41d35c05.pth' 
+
+\end{lstlisting}
+
+
+\subsection{增加新数据类}
+
+\subsubsection{转成公用格式}
+最简单的方式就是将自己的数据脚本转换成coco或者voc格式。然后更改配置文件中的数据信息。比如coco格式，
+在configs/my\_custom\_config.
+py中有:
+
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+	...
+	# dataset settings
+	dataset_type = 'CocoDataset'
+	classes = ('a', 'b', 'c', 'd', 'e')    ＃　自己的五类名字
+	...
+	data = dict(
+		samples_per_gpu=2,
+		workers_per_gpu=2,
+		train=dict(
+			type=dataset_type,
+			classes=classes,
+			ann_file='path/to/your/train/data',
+			...),
+		val=dict(
+			type=dataset_type,
+			classes=classes,
+			ann_file='path/to/your/val/data',
+			...),
+		test=dict(
+			type=dataset_type,
+			classes=classes,
+			ann_file='path/to/your/test/data',
+			...))
+	...
+	
+\end{lstlisting}
+
+\subsubsection{中间格式}
+mmdet提供了和coco，voc等兼容的中间格式：
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+	[
+		{
+			'filename': 'a.jpg',
+			'width': 1280,
+			'height': 720,
+			'ann': {
+				'bboxes': <np.ndarray, float32> (n, 4),
+				'labels': <np.ndarray, int64> (n, ),
+				'bboxes_ignore': <np.ndarray, float32> (k, 4),
+				'labels_ignore': <np.ndarray, int64> (k, ) (optional field)
+			}
+		},
+		...
+	]
+	
+\end{lstlisting}
+
+使用方式：
+　\begin{itemize}
+	\item[1.] 在线转换
+		\newline
+		 写一个继承自CustomDataset的类，并重写load\_annotations(self, ann\_file) 
+		和　get\_ann\_info(self, idx)两个方法。参考CocoDataset，VOCDataset。
+
+	\item[2.] 离线转换 
+		\newline
+		将标注文件转成中间格式，保存成pickle或json文件，参看pascal\_voc.py，然后调用
+		CustomDataset即可。
+
+\end{itemize}
+一个例子，
+假设标注文件格式如下
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+#
+000001.jpg
+1280 720
+2
+10 20 40 60 1
+20 40 50 60 2
+#
+000002.jpg
+1280 720
+3
+50 20 40 60 2
+20 40 30 45 2
+30 40 50 60 3
+\end{lstlisting}
+
+我们可以写一个继承自CustomDataset的新类如下:
+
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+import mmcv
+import numpy as np
+
+from .builder import DATASETS
+from .custom import CustomDataset
+
+@DATASETS.register_module()
+class MyDataset(CustomDataset):
+
+	CLASSES = ('person', 'bicycle', 'car', 'motorcycle')
+
+	def load_annotations(self, ann_file):
+		ann_list = mmcv.list_from_file(ann_file)
+
+		data_infos = []
+		for i, ann_line in enumerate(ann_list):
+			if ann_line != '#':
+				continue
+
+			img_shape = ann_list[i + 2].split(' ')
+			width = int(img_shape[0])
+			height = int(img_shape[1])
+			bbox_number = int(ann_list[i + 3])
+
+			anns = ann_line.split(' ')
+			bboxes = []
+			labels = []
+			for anns in ann_list[i + 4:i + 4 + bbox_number]:
+				bboxes.append([float(ann) for ann in anns[:4]])
+				labels.append(int(anns[4]))
+
+			data_infos.append(
+				dict(
+					filename=ann_list[i + 1],
+					width=width,
+					height=height,
+					ann=dict(
+						bboxes=np.array(bboxes).astype(np.float32),
+						labels=np.array(labels).astype(np.int64))
+				))
+
+		return data_infos
+
+	def get_ann_info(self, idx):
+		return self.data_infos[idx]['ann']
+
+# 配置文件做如下更改:
+
+dataset_A_train = dict(
+    type='MyDataset',
+    ann_file = 'image_list.txt',
+    pipeline=train_pipeline
+)
+
+\end{lstlisting}
+
+数据合并，Repeat或Concatemate，顾名思义，将同一种数据重复多次，或不同数据concate成一个更大的数据。
+
+如果你只想训练某数据的指定类别，只需要做如下改动:
+
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+classes = ('person', 'bicycle', 'car')
+# classes = 'path/to/classes.txt'  # 或者类别从文件中读取
+data = dict(
+	train=dict(classes=classes),
+	val=dict(classes=classes),
+	test=dict(classes=classes))
+\end{lstlisting}
+
+
+\subsection{自定义数据管道}
+
+经典的数据管道如下：
+\begin{figure}[htbp]
+	\centering
+	\includegraphics[width=9cm, height=3cm]{./pic/data_pipeline.png}
+	\caption{ data pipeline }
+\end{figure}
+
+蓝色块为管道算子，一个算子为一个数据增强算法，从左到右，依次字典进，字典出。关于数据结构，可参考第二节数据处理。
+这里绿色为算子作用后新增的keys，橙色为算子作用与已有keys的values后的更新标记。
+
+
+\subsubsection{扩展pipelines}
+
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+
+# １．实现新增强函数　my\_pipeline.py
+# 和pytorch原始transforms中的增强方式一样，实现__call__方法的类即可
+from mmdet.datasets import PIPELINES
+
+@PIPELINES.register_module()
+class MyTransform:
+
+    def __call__(self, results):　　　　# 输入的是mmdet设定的字典格式
+        results['dummy'] = True
+		return results
+		
+# 2. 导入新类.
+from .my_pipeline import MyTransform
+
+# 3. 配置文件调用
+
+img_norm_cfg = dict(
+    mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375], to_rgb=True)
+train_pipeline = [
+    dict(type='LoadImageFromFile'),
+    dict(type='LoadAnnotations', with_bbox=True),
+    dict(type='Resize', img_scale=(1333, 800), keep_ratio=True),
+    dict(type='RandomFlip', flip_ratio=0.5),
+    dict(type='Normalize', **img_norm_cfg),
+    dict(type='Pad', size_divisor=32),
+    dict(type='MyTransform'),
+    dict(type='DefaultFormatBundle'),
+    dict(type='Collect', keys=['img', 'gt_bboxes', 'gt_labels']),
+]
+\end{lstlisting}
+
+
+\subsection{增加新模块}
+每一个组件都如上小节所给的三部曲，实现，导入，修改配置文件。每一步，mmdet中都有一些范例，分别看一下，就能实现改写。
+
+\subsubsection{优化器}
+
+一些模型可能需要对某部分参数做特殊优化处理，比如批归一化层的权重衰减。我们可以通过自定义优化器构造函数来进行细粒度参数调优。
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+from mmcv.utils import build_from_cfg
+
+from mmdet.core.optimizer import OPTIMIZER_BUILDERS, OPTIMIZERS
+from mmdet.utils import get_root_logger
+from .cocktail_optimizer import CocktailOptimizer
+
+@OPTIMIZER_BUILDERS.register_module
+class CocktailOptimizerConstructor(object):
+
+	def __init__(self, optimizer_cfg, paramwise_cfg=None):
+
+	def __call__(self, model):
+
+		return my_optimizer
+	
+\end{lstlisting}
+
+
+\subsubsection{开发新组件}
+
+\begin{itemize}
+	\item backbone，参考MobilenetV2
+	\item neck, 参考PAFPN
+	\item head 参考Retinaface
+	\item roi extractor，　参考 DCN ROIAlign
+\end{itemize}
+
+关于head相关组件，核心的点我认为在于数据的流向。基础变换层由forward函数得到变换的结果，怎么放到Loss中去，其中所涉及到的
+数据细节操作，是比较关键的。mmdet中会在head模块中实现对应的loss函数，最终被汇集到检测模型的loss中去。分别调用各自的loss.step, 进行权重更新。
+
+这里贴一个新增loss样例:
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+
+# 1.在 mmdet/models/losses/my_loss.py实现新的box回归函数
+import torch
+import torch.nn as nn
+
+from ..builder import LOSSES
+from .utils import weighted_loss
+
+@weighted_loss　　　　＃　加权损失函数，可参考损失函数章节
+def my_loss(pred, target):
+	assert pred.size() == target.size() and target.numel() > 0
+	loss = torch.abs(pred - target)
+	return loss
+
+@LOSSES.register_module
+class MyLoss(nn.Module):
+
+	def __init__(self, reduction='mean', loss_weight=1.0):
+		super(MyLoss, self).__init__()
+		self.reduction = reduction
+		self.loss_weight = loss_weight
+
+	def forward(self,
+				pred,
+				target,
+				weight=None,
+				avg_factor=None,
+				reduction_override=None):
+		assert reduction_override in (None, 'none', 'mean', 'sum')
+		reduction = (
+			reduction_override if reduction_override else self.reduction)
+		loss_bbox = self.loss_weight * my_loss(
+			pred, target, weight, reduction=reduction, avg_factor=avg_factor)
+
+# ２．然后在mmdet/models/losses/__init__.py.中注册
+from .my_loss import MyLoss, my_loss
+
+# 3. 配置文件使用
+loss_bbox=dict(type='MyLoss', loss_weight=1.0))
+
+\end{lstlisting}
+
+\subsection{1.x模型升级到2.0}
+
+执行脚本　tools/upgrade\_model\_version.py。可能有小于 1\% 的绝对AP减小，具体可参见configs/legacy。
+
+\subsection{2.0和1.x的不同之处}
+主要有四点不同：坐标系，基础代码约定，训练超参数，模块设计。
+
+\subsubsection{坐标系}
+新坐标系与\href{https://github.com/facebookresearch/detectron2/}{detectron2}一致
+treats the center of the most left-top pixel as (0, 0) rather than the left-top corner of that pixel. 
+这句话的意思是将$bbox = [x1, y1, x1 + w - 1, y1 + h - 1]$改为$bbox = [x1, y1, x1 + w, y1 + h]$，这样更加
+自然和精确(假设长或宽为1,则box退缩为点或线，这是有问题的)，同理xyxy2xywh的长宽就不在+1了，生成的anhor的中心偏移也不在是0.5而是０了。
+与此相关的改动有Box的编解码，与iou计算相关的nms，assinger。另外，现在的坐标为float，１.xx为int，与此相关的有ahchor与特征网格的中心
+对齐问题，这对anchor-based的方法在性能上有一定影响(变好)，ROIAlign也能更好的对齐，mask cropping and pasting更精准，
+利用新的RoIAlign 去crop mask targets，会得到更好的结果，因为没有取整等误差了，而且在训练上也有~0.1s/iter的速度提升(少了取整操作)。
+
+\subsubsection{Codebase Conventions}
+
+\begin{itemize}
+	\item 类别设定，1.x中０为背景，$[1, k]$为$k$类对象，2.0中$k$为背景，$[0, k-1]$ 为$k$类对象。
+	\item bbox分配方案就低质量分配上得到了改进。支持了更多长宽尺度输入，以上均有微弱性能提升。
+	\item 配置名称约定改动为 $[model]\_(model setting)\_[backbone]\_[neck]\_(no
+	\newline
+	rmsetting)\_(misc)\_(gpu x batch)\_[schedule]\_[dataset].py$，
+\end{itemize}
+
+
+\subsubsection{训练超参数}
+一些训练参数的优化
+\begin{itemize}
+	\item nms后的rpn的proposals从2000改为1000,(nms\_post=1000, max\_
+	num=1000)，mask, bbox AP有~0.2\%的提升。
+	\item Mask, Faster R-CNN框回归损失函数Smooth L1 改为L1带来~0.6\%的提升,Cascade R-CNN and HTC保持原样。
+	\item RoIAlign layer 采样数设置为０，0.2\%提升
+	\item 默认设置不在使用梯度截断，这样训练更快，但RepPoints保持是为了训练稳定以及更好的结果。
+	\item 默认的warmup ratio 从$1/3$改为$0.001$，这样更平滑，同时也是因为去掉了梯度截断。
+\end{itemize}
 
 \end{document}
