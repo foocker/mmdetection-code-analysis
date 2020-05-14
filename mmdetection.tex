@@ -303,9 +303,70 @@ class ResNet(nn.Module):
 	\label{picbifpn}
 \end{figure}
 
+\begin{figure}[htbp]
+	\centering
+	\includegraphics[width=7cm,height=4cm]{./pic/BFPN.png}
+	\caption{bfpn}
+	\label{picbfpn}
+\end{figure}
 
-\subsubsection{多尺度结构}
-FPN,BFPN BiFPN, HRFPN等。
+\subsubsection{多尺度结构及改进}
+提到数字图像的多尺度，首先想到的是David Lowe于1999发表的SIFT算法。而DL中的多尺度结构FPN，算了接了SIFT的衣钵。
+2017年，Tsung-Yi Lin等人提出\href{https://arxiv.org/abs/1612.03144}{FPN}，其摘要中给出解释:
+A top-down architecture with lateral connections is developed forbuilding high-level semantic feature maps at all scales。
+从中我们看到几个关键词，自顶向下，横向连接，高级语义特征，各种尺度。
+
+想象一下，一张图被1/2下采样了几次，那么同样的物体在不同从尺度上，
+表示的信息将至少对半折少(像素信息)，那么合并各层信息将有助于有效信息的叠加，抑制某些物体的消失。因此容易看出这几个关键词的一些可变化的地方。
+自顶向下，自底向上，连接方式可从全连接开始缩减，获取高级语义特征的方式，不同尺度特征对齐的方式，更多尺度。若采用事后诸葛亮的逻辑，那么后续
+确实有一些文章是在围绕这个几个点做改进工作。比如看一眼\ref{picbifpn}，不过 \href{https://arxiv.org/abs/1911.09070}{BiFPN}增加了各层的权重因子，
+这和后来横飞的Attention是一致的。bifpn的实现参考\href{https://github.com/zylo117/Yet-Another-EfficientDet-Pytorch}{YAEDet.Pytorch}，
+如果想看更好看的实现，可参考\href{https://github.com/toandaominh1997/EfficientDet.Pytorch/blob/master/models/bifpn.py}{bifpn.pytorch}，
+实现细节上和论文有出入(YAEDet.Pytorch)，所以自行采坑。类似于简化全连接可参考\href{https://arxiv.org/abs/1904.04514}{HRFPN}，看图就行，大同小异。
+另外mmdet中实现了\href{https://arxiv.org/pdf/1904.02701.pdf}{BFPN}，从\ref{picbfpn}可以看到，是对原始fpn后的特征做了一次残差操作。
+具体就是特征做了一次合并和解耦(融合，分离)，然后和输入特征相加。
+
+fpn的改进远不止以上内容，因为其他很多改进可以合并到\ref{smallobj}小目标改进上，所以这里暂时省去。
+
+最后，FPN的代码相对比较简单，这里选择三点说明。
+
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+# 1. 一行代码:
+# add extra conv layers (e.g., RetinaNet)
+extra_levels = num_outs - self.backbone_end_level + self.start_level
+
+# 参数说明，num_outs：最终fpn输出的尺度个数，backbone_end_level：输入尺度的第几层作为基础fpn输出的最后一层，
+# start_level：输入尺度作为基础fpn输出尺度的开始层
+# 上面没解释清楚，本来fpn没有额外加层的，你可以理解基础fpn就是原始的fpn，输入多少个层，选一个开始和结束，作为截断就是
+#输出结果，现在有了额外层，所以，fpn从基础fpn变为最终fpn。num_outs就是你想输出的最终尺度个数，额外差的尺度特征，从
+# 基础fpn被截断的层数(x=backbone_end_level - start_level)末尾开始，往下再下采样y=num_outs-x)即得到最终的fpn特征。
+
+# 2. 一个基础模块: ConvModule，有conv_cfg， norm_cfg，act_cfg三个配置， 作为最小卷积配置单元，注意一下。
+
+# 3. 额外加层：add_extra_convs为False时，Maskrcnn, Fasterrcnn 会在基础fpn上外增加num_outs - used_backbone_levels(x,如上)个max_pool层，
+# 为True时，Retina增加额外y层3*3，stride=2的基础ConvModule模块。
+\end{lstlisting}
+
+另外经典fpn的自顶向下连接方式从\ref{picfpn}图中容易理解，注意代码中使用的F.interpolate支持3,4,5维的张量。
+
+
+\subsubsection{小目标}
+\label{smallobj}
+这里只是随便一写，待修改。
+\href{https://www.zhihu.com/question/272322209}{小目标建议}
+\href{https://arxiv.org/abs/1902.07296}{small aug}
+\href{https://blog.aigrant.org/ai-grant-research-small-object-detection-8e7f71408096}{small obj aug}
+\href{https://arxiv.org/abs/2003.07021}{fpn on small obj}
+\href{https://arxiv.org/abs/1805.09300}{SNIPER training}
+
+可以看到，以下都有论文，没代码。
+\href{https://paperswithcode.com/task/small-object-detection/codeless}{small obj paper}
+
+\href{https://paperswithcode.com/task/small-object-detection}{small obj detection code}
+
+以上内容粗略总结起来就是，根据标注copy出更多的小目标，分尺度采样训练(SNIPER)，head增加SSH等特征融合模块，
+改写bbox loss， anchor的细致设计(faceboxes的不同尺度上anchor均衡)，使用浅层特征，提高特征分辨率等有用，其他基本没啥用。
 
 \subsection{Heads}
 Heads 主要包含了是三部分,anchor\_heads, bbox\_heads, mask\_heads,
@@ -478,14 +539,75 @@ AnchorGenerator类, init()函数需要如下参数:
 guided\_anchor\_head.py, ga\_retina\_head.py
 
 \subsubsection{FCOSHead}
-若其他人补。
+2.0版fcos代码合并到了singlestage，这里就省略代码解析了。
+
+将开始写的fcos论文阅读写的文字帖到这里，只能和这一节的整体结构不违和一下了。
+
+物体检测的算法基本可以用以下这段话来描述:
+
+在某一度量(..)下,找出与人为标定的物体的框的集合,利用这个集合按不同策略生成更有效的正负样本,完成物体的位置预测.
+
+以IOU为度量的模型有Faster R-CNN, SSD 和 YOLOv2, v3等.
+它从标定框与虚拟框的偏移集中学习物体的标定框与虚拟框的映射关系,以此来完成物体定位.这里的隐含点为映射变量为物体的表示向量,这是根据类别标签优化而得. FCOS可以称为以center-ness为度量的检测模型.它将标定框内的聚中心的所有点作为物体的有效表示点,学习其与标定框的中心偏移量,完成物体的检测.
+
+因为两者度量方式不同,导致后续操作差别比较大,iou度量的
+anchor-based模型,需要给每个位置点设计不同形状的anchor作为候选框,然后在所有尺度上进行筛选(或不同尺度分别筛选),这个过程较为细致,且超参数较多,对不同任务较为敏感.后者anchor-free则省去了anhor构造的过程,可以直接在选出的点上做位置偏移预测，比较简单.
+
+
+\begin{figure}[htbp]
+	\centering
+	\begin{minipage}[t]{0.9\textwidth}
+	\centering
+	\includegraphics[width=5cm, height=4cm]{./pic/fcos_struct.png}
+	\caption{fcos}
+	\label{picfcos}
+	\end{minipage}
+\end{figure}
+
+从以上结构图能清晰的看到FCOS算法的的三大模块.它的核心点在Classification + Center-ness + Regression.
+(代码以maskrcnn-benchmark为基础,核心在rpn/fcos的三个文件中(后续).)
+
+这里有几点需要说明:
+\begin{itemize}
+    \item 限制不同特征层的预测框范围
+    $\left\{P_{3}, P_{4}, P_{5}, P_{6}, P_{7}\right\}$对应范围
+    区间$0,64,$ $128,256,512 \text { and } \infty$.
+    
+    \item $P_i, \text{层的位置回归做如下动态调整}\exp \left(s_{i} x\right)$以适应不同特征层回归不同范围.
+    
+    \item 位置预测的是中心点距离物体左上下右的距离,且位置回归函数是UnitBox中的IOU loss.
+    
+    \item IOU loss:
+    $
+	\begin{array}{l}{\square \text { Ground that } \tilde{x}=\left(\tilde{x}_{t}, x_{b}, \tilde{x}_{l},
+		\tilde{x}_{r}\right)} \\ {\square \text { predictors } \quad x=\left(x_{t}, x_{b}, x_{l}, x_{r}\right)} \\
+		{\ell_{2} \text { loss }=\|\square-\square\|_{2}^{2}} \\ 
+	{\text { IoU loss }=-\ln \frac{\text {Intersection}(\square, \square)}{\text {Union}(\square, \square)}}
+	\end{array}$
+    
+    \item $\text { centerness }^{*}=\sqrt{\frac{\min \left(l^{*}, r^{*}\right)}{\max \left(l^{*}, r^{*}\right)} \times \frac{\min \left(t^{*}, b^{*}\right)}{\max \left(t^{*}, b^{*}\right)}}$ 以此来筛选更有代表的物体表示点.
+    
+    \item 在多个box内的点,选择box 面积最小的那个作为其label box.
+    
+\end{itemize}
+
+最终损失函数为:
+$$
+\begin{aligned} L\left(\left\{\boldsymbol{p}_{x, y}\right\},
+\left\{\boldsymbol{t}_{x, y}\right\}\right) &=\frac{1}{N_{\mathrm{pos}}} 
+\sum_{\boldsymbol{x}, y} L_{\mathrm{cls}}\left(\boldsymbol{p}_{x, y}, c_{x, y}^{*}\right) 
+\\ &+\frac{\lambda}{N_{\mathrm{pos}}} \sum_{x, y} \mathbb{I}_{\left\{c_{x, y}^{*}>0\right\}} 
+L_{\mathrm{reg}}\left(\boldsymbol{t}_{x, y}, \boldsymbol{t}_{x, y}^{*}\right)
+ \end{aligned}
+$$
 
 \subsection{Losses}
 \label{sec:loss}
 \subsubsection{基本认识}
 
 \href{https://arxiv.org/abs/1708.02002}{Fcoalloss}.
-想像一下特征层上的锚框,远离gt的必然占绝大多数,围绕在gt周围的bbox有模棱两可的(正负),故有正负难易之分.FcoalLoss 是为解决难易样本的不平衡问题.公式如下:
+想像一下特征层上的锚框,远离gt的必然占绝大多数,围绕在gt周围的bbox有模棱两可的(正负),故有正负难易之分.
+FcoalLoss 是为解决难易样本的不平衡问题.公式如下:
 \begin{equation}
 	FL(p_t) = -\alpha_{t}(1-p_t)^{\gamma}log(p_t),\text{其中}
 	p_t=\left\{
@@ -769,10 +891,70 @@ RoIAlign在ops中,经cuda加速,详解待后.
 \end{lstlisting}
 
 \subsubsection{RepPoints}
-	利用DCN特性,实现了检测的结构点表示方式的优化.
+
+\begin{figure}[htbp]
+	\centering
+	\begin{minipage}[t]{0.9\textwidth}
+	\centering
+	\includegraphics[width=8cm, height=6cm]{./pic/DCN.png}
+	\caption{dcn}
+	\label{picdcn}
+	\end{minipage}
+\end{figure}
+
+\begin{figure}[htbp]
+	\centering
+	\begin{minipage}[t]{0.9\textwidth}
+	\centering
+	\includegraphics[width=9cm, height=3.2cm]{./pic/RepPoints.png}
+	\caption{reppoints}
+	\label{picreppoints}
+	\end{minipage}
+\end{figure}
+
+
+2019年，Ze Yang等人利用\href{https://arxiv.org/pdf/1811.11168.pdf}{DCNv2}的特性，实现了结构点表示物体的检测算法
+\href{https://arxiv.org/pdf/1904.11490.pdf}{RepPoints}。其中DCNv2从DCNv1进化而来，出发点如\ref{picdcn}所示，
+改变了卷积的采样点。其卷积数学表达式如下:
+$y(p)=\sum_{k=1}^{K} w_{k} \cdot x\left(p+p_{k}+\Delta p_{k}\right) \cdot \Delta m_{k}$
+对应的池化层为：$y(k)=\sum_{j=1}^{n_{k}} x\left(p_{k j}+\Delta p_{k}\right) \cdot \Delta m_{k} / n_{k}$
+其中$w_k, p, p_k, \Delta p_k, \Delta m_k$分别表示卷积核参数，卷积中心点(图上)，当前卷积点，当前点的偏移量，
+当前点的权重因子，就这么简单。不规则采样点和图像中物体的不规则形状是吻合的，所以直观上讲，这个卷积是很有意义的。
+实验上你可以将以前的conv策略性的替换为dcn，也许会带来性能的提升(ps后续很多新检测算法实验，证明了这一点)。
+
+问题是如何利用DCNv2不规则卷积，来做检测算法呢？
+
+\begin{itemize}
+	\item[1.] 通过定位和分类的直接监督来学习可形变卷积的偏移量，使得偏移量具有可解释性(@陀飞轮)。
+	\item[2.] 可以通过采样点来直接生成伪框 (pseudo box)，不需要另外学习边界框，并且分类和定位是有联系的(@陀飞轮)。
+\end{itemize}
+
+从\ref{picreppoints}可以看出，DCN卷积得到$2N$的偏移量，将其限制到标定的bbox，类似于rpn，然后重复DCN得到$2N, C+1$分别作
+送入bbox回归和class分类(refine)。也即上面所说的两点。其中的关键点是学习的points，需要限制到标定的bbox中，也即学习的引导。
+因为是点表示，所以一个自然的问题是比如人脸检测，那么所得到的点的几何结构是一致的吗？更精细的问题是，可以得到物体的边缘点吗？
+
+这需要对算法更细致的研究了，可以参考一下\href{https://www.zhihu.com/question/322372759/answer/798327725}{官方说明}：
+
+“
+这里面“可学习的采样点集合”其实是更本质的概念，这些采样点同时用来提取语义对齐的特征，又用来表示物体的几何形态。
+deformable convolution是其中一种基于采样点的特征提取方法，但同时还可以有其它的实现。几何形态监督的方式也可以是更多样的，
+除了物体检测中的bounding box标注外，还可以利用更精细的几何标注来进行监督。我们最近有一个工作就提出了不同的特征提取方法，
+以及不同的几何监督方式。
+
+通常来说，用anchor去覆盖4d空间是困难的，所以一般需要不同尺度和不同长宽比的多种anchor，而且赋予这个anchor box类别标签也相对麻烦，
+需要计算和ground-truth box的IoU。与之对应的，要覆盖2d空间和赋予类别都很容易，典型的2d表示包括center point，corner point等等。
+
+回归vs. 验证是一个很古老的问题，通常来讲求解验证问题比求解回归问题更容易，但是效率更低。在物体检测里面，通常的做法是先做粗验证，
+后用回归方法来做精确定位。基于anchor的设计就是典型的验证思路，后续回归只在一个很小的范围内进行。而anchor-free方法更
+多依赖回归来求解问题，通常讲更难学习，但是因为有了deep的特征，以及多阶段的定位方法，效果能比肩依赖验证更多的anchor-based
+方法，同时框架更简洁。
+
+RepPoints不仅能用来解决物体检测问题，它在表示物体的精细结构上也有很大潜力，例如预测物体的contour(后续会公布)。
+”
+
 
 \subsubsection{RetinaFace}
-再说，和ssd重复较大。
+再说，和ssd重复较大。可以选择放自己改的代码。
 
 \section{数据处理}
 \label{sec:detail}
@@ -1185,7 +1367,9 @@ torch相关:new\_full,nonzero,numel,expand,where见损失函数一节。
 
 \section{计划}
 \begin{itemize}
-	\item [0.]  待补充
+	\item [0.]  模型评估，分布式数据处理
+	\item [1.] 小样本数据增强代码，coco格式数据的统计代码
+	\item [2.] setup.py, docker, onnx等部分
 \end{itemize}
 
 \section{检测模型的简略综述}
@@ -1270,11 +1454,11 @@ Mask R-CNN = Faster R-CNN  with FCN on ROIs.其主要流程参见\ref{maskrcnn}.
 
 Cascade RCNN发现只有proposal自身的阈值和训练器的训练阈值较为接近时,训练器的性能才最好.
 \subsubsection{Anchor Free 系列}
-FCOS
-
+FCOS, CenterNet， 见上。
 
 \subsection{总结}
 
+提供一套有用的代码。
 
 \section{官方文档2.0伪译}
 2.0相比1.x，就代码组织上，在模块化这方面有了更好的贯彻。能拆分的就拆分，比如配置文件，数据的信息整合、变换、采样迭代，
