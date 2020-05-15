@@ -534,7 +534,7 @@ AnchorGenerator类, init()函数需要如下参数:
 
 
 \subsubsection{RetinaHead}
-后补。
+比较容易，暂略。可替换为ga\_retinahead。
 \subsubsection{GuidedHead}
 guided\_anchor\_head.py, ga\_retina\_head.py
 
@@ -955,6 +955,503 @@ RepPoints不仅能用来解决物体检测问题，它在表示物体的精细�
 
 \subsubsection{RetinaFace}
 再说，和ssd重复较大。可以选择放自己改的代码。
+
+\section{Core}
+
+\subsection{anchor}
+一般anchor生成可参考\ref{sub:anchorhead}。
+这里说说point generator。
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+class PointGenerator(object):
+	def _meshgrid(self, x, y, row_major=True):
+		xx = x.repeat(len(y))
+		yy = y.view(-1, 1).repeat(1, len(x)).view(-1)
+		if row_major:
+			return xx, yy
+		else:
+			return yy, xx
+
+	def grid_points(self, featmap_size, stride=16, device='cuda'):
+		feat_h, feat_w = featmap_size
+		shift_x = torch.arange(0., feat_w, device=device) * stride
+		shift_y = torch.arange(0., feat_h, device=device) * stride
+		shift_xx, shift_yy = self._meshgrid(shift_x, shift_y)
+		stride = shift_x.new_full((shift_xx.shape[0], ), stride)
+		shifts = torch.stack([shift_xx, shift_yy, stride], dim=-1)
+		all_points = shifts.to(device)
+		return all_points
+
+	def valid_flags(self, featmap_size, valid_size, device='cuda'):
+		feat_h, feat_w = featmap_size
+		valid_h, valid_w = valid_size
+		assert valid_h <= feat_h and valid_w <= feat_w
+		valid_x = torch.zeros(feat_w, dtype=torch.bool, device=device)
+		valid_y = torch.zeros(feat_h, dtype=torch.bool, device=device)
+		valid_x[:valid_w] = 1
+		valid_y[:valid_h] = 1
+		valid_xx, valid_yy = self._meshgrid(valid_x, valid_y)
+		valid = valid_xx & valid_yy
+		return valid
+\end{lstlisting}
+
+\subsection{bbox}
+\subsubsection{assigners}
+内容较多，看情况填。
+\subsubsection{coder}
+bbox的编码是基础重要的，一家之言：anchor genertor让优化空间合理，bbox编码让优化更合理(guided anchor处在这两者之间)。
+通常bbox连归一化都不做的，效果不会好到哪里去(可以试试retinaface)。但是在不同方法体系里面，就不好说了，比如以中心点
+表示方式的CenterNet，对$w, h$做回归，就没有编码，直接拟合$\Delta w, \Delta h$，但它是在下采样$1/4$后的特征图上，
+也即尺度上还是除了4。总归而言，要让优化对象存在一个合理的空间上，才是本质的。
+
+one, two stage的bbox编码方式，来源于14年Ross Girshick等人写的rcnn，
+其编码为
+$$
+\begin{aligned}
+	t_{x} &=\left(G_{x}-P_{x}\right) / P_{w} \label{1} \\
+	t_{y} &=\left(G_{y}-P_{y}\right) / P_{h} \label{2}\\
+	t_{w} &=\log \left(G_{w} / P_{w}\right)  \label{3}\\
+	t_{h} &=\log \left(G_{h} / P_{h}\right)  \label{4}
+\end{aligned}
+$$
+此处$P$是anchor，$G$是标框。
+
+解码为：
+$$
+\begin{aligned}
+	\hat{G}_{x} &=P_{w} d_{x}(P)+P_{x} \\
+	\hat{G}_{y} &=P_{h} d_{y}(P)+P_{y} \\
+	\hat{G}_{w} &=P_{w} \exp \left(d_{w}(P)\right) \\
+	\hat{G}_{h} &=P_{h} \exp \left(d_{h}(P)\right)
+\end{aligned}
+$$
+% 相应的优化函数我也帖一下：
+% $$
+% \mathbf{w}_{\star}=\underset{\hat{\mathbf{w}}_{\star}}{\operatorname{argmin}}
+%  \sum_{i}^{N}\left(t_{\star}^{i}-\hat{\mathbf{w}}_{\star}^{\mathrm{T}}
+%  \phi_{5}\left(P^{i}\right)\right)^{2}+\lambda\left\|\hat{\mathbf{w}}_{\star}\right\|^{2}
+% $$
+关于这种编码的合理性，见\ref{sub:anchorhead}的分析。
+
+那么代码如何实现呢？
+
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+class BaseBBoxCoder(metaclass=ABCMeta):
+
+	def __init__(self, **kwargs):
+		pass
+
+	@abstractmethod
+	def encode(self, bboxes, gt_bboxes):
+		pass
+
+	@abstractmethod
+	def decode(self, bboxes, bboxes_pred):
+		pass
+
+
+def bbox2delta(proposals, gt, means=(0., 0., 0., 0.), stds=(1., 1., 1., 1.)):
+	assert proposals.size() == gt.size()
+
+	proposals = proposals.float()    # 浮点数
+	gt = gt.float()
+	px = (proposals[..., 0] + proposals[..., 2]) * 0.5    # 中心点(x1+x2)/2
+	py = (proposals[..., 1] + proposals[..., 3]) * 0.5 
+	pw = proposals[..., 2] - proposals[..., 0]    
+	ph = proposals[..., 3] - proposals[..., 1]
+
+	gx = (gt[..., 0] + gt[..., 2]) * 0.5    
+	gy = (gt[..., 1] + gt[..., 3]) * 0.5
+	gw = gt[..., 2] - gt[..., 0]    # 宽(x2 - x1) = w
+	gh = gt[..., 3] - gt[..., 1]
+
+	dx = (gx - px) / pw    # \eqref{1}
+	dy = (gy - py) / ph    # \eqref{2}
+	dw = torch.log(gw / pw)
+	dh = torch.log(gh / ph)    # \eqref{4}
+	deltas = torch.stack([dx, dy, dw, dh], dim=-1)    # 最后一维度stack
+
+	means = deltas.new_tensor(means).unsqueeze(0)    # new_tensor和unsqueeze(扩张维度)
+	stds = deltas.new_tensor(stds).unsqueeze(0)
+	deltas = deltas.sub_(means).div_(stds)    # sub_ 和 sub 的区别
+
+	return deltas
+
+
+gx = torch.addcmul(px, 1, pw, dx)  # gx = px + pw * dx
+gy = torch.addcmul(py, 1, ph, dy)  # gy = py + ph * dy
+
+# torch.addcmul(input, tensor1, tensor2, *, value=1, out=None) → Tensor
+# outi​=input_i​+value×tensor_1i​×tensor_2i​
+\end{lstlisting}
+
+stack, new\_tensor, unsqueeze, div\_可以学习一下。另外为何$\Delta$坐标系(说法不严谨，
+但可以理解，cv论文经常这样)要做高斯归一化变换呢？可参考\href{https://arxiv.org/abs/1904.04620}{Gaussian YOLOv3}。
+我的理解，将优化空间映射到高斯$\mu-\sigma$分布中。
+
+在解码函数delta2bbox有如下函数需要注意一下(tensor.*)：
+repeat, clamp, expand\_as, exp, torch.addcmul, view\_as。
+
+另外一种编码方式，来自19年Chenchen Zhu等人写的\href{https://arxiv.org/abs/1903.00621}{FSAF}。
+将(x1, y1,x2, y2)编码为(top, bottom, left, right)，含义自明。代码上需要注意的是$w, h$的归一化以及整体
+的归一化因子，默认除以4。此编码对应的bbox loss 也将变为Iou 系列 Loss， 若说明，也应该是在模型解析部分补充。
+
+
+\subsubsection{sampler}
+只说一条完整线即可，基础类到max\_iou  sample。
+\subsubsection{iou\_calculators}
+torch版本的iou计算，主要注意点是张量计算，广播机制。
+
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+# bboxes1 (Tensor): shape (m, 4) in <x1, y1, x2, y2> format or empty.
+# bboxes2 (Tensor): shape (n, 4) in <x1, y1, x2, y2> format or empty.
+lt = torch.max(bboxes1[:, None, :2], bboxes2[:, :2])  # 这里m!=n, [m, None, 2] + [n, 2] --> [m, n, 2] 
+# None 技巧
+\end{lstlisting}
+
+\subsection{evaluate}
+他补。
+\subsection{fp16}
+再说。
+\subsection{mask}
+主要是借鉴之detectron2的结构类，数据结构是精髓。
+\subsection{optimizer}
+torch的优化器基本完备，mmdet中这部分代码上也没什么可说的，
+所以这里主要说一些和理论相关的内容。
+
+\subsubsection{优化算法}
+
+\begin{itemize}
+	\item[1.] The Loss Surfaces of Multilayer Networks(2015.Anna Choromanska) \label{all not diff}
+	\item[2.]  Escaping From Saddle Points — Online Stochastic Gradient for Tensor
+	Decomposition(2015.Rong Ge)
+	\item[3.] Efficient approaches for escaping higher order saddle points in 
+	nonconvex optimization(2016.Anima Anandkumar)
+	\item[4.]  How to Escape Saddle Points Efficiently(2017.Chi Jin)
+	\item[5.]  Hessian-based Analysis of Large Batch Training and Robustness to
+	Adversaries(2018)
+	\item[6.] Over- Deep Neural Networks Have No Strict Local Minima For Any
+	Continuous Activations (2018)
+	\item[7.] Gradient descent with identity initialization efficiently learns positive
+	definite linear transformations by deep residual networks (2018)
+	\item[8.] Deep linear neural networks with arbitrary loss: All local minima are
+	global (2017)
+	
+\end{itemize}
+
+1,2,3 主要来自此篇博文:
+\href{http://www.offconvex.org/2016/03/22/saddlepoints/}{Escaping from Saddle Points}
+，论文 1 说明了在深度学习中, 几乎所有的局部极值点和全局最优点的函数差值都不
+大, 因此只要收敛到局部极小值点就差不多了. 而文章 3 又指出寻找一般非
+凸函数的局部极值点是一个 NP-hard 问题. 除此之外, 文章 3 主要考虑了非
+凸优化问题中的 degenerate saddle points , 并给出利用三阶导数信息来逃离
+鞍点并收敛到三阶局部最下值的算法. 文章 2 中作者定义了 strict saddle 概
+念, 并给出随机梯度下降法能在多项式时间内收敛到局部极值点的证明 (有
+限制条件),也即$y=x-\eta \nabla f(x)+\epsilon$,其中$\epsilon$ 就是梯度随机因子.
+毕竟鞍点是不稳定的, 加扰动因子, 是很容易逃离鞍点附近的. 但是, 问题是如果鞍点
+附近平稳区域太大, 或者逃离的方向不太对, 怎么办? 这样就很容易跑到无
+穷小或无穷大去了. 关于这一点, 博主又更新了一篇文章Saddles Again, 文
+章表明一般优化算法很难收敛到鞍点, 除非你精心设计初始点, 调节参数等.
+
+考虑简单的不定二次型,$f(x)=\frac{1}{2} \sum_{i=1}^{d} a_{i} x_{i}^{2}$
+其中前 $k$ 个系数为正, 后
+$d − k $个系数为负数, 因此我们很容易得到其梯度迭代形式:
+$$x^{(k+1)}=x^{(k)}-t \nabla f\left(x^{(k)}\right)$$
+考虑第 $i $维度, 容易得到
+$$x_{i}^{(k)}=\left(1-t a_{i}\right)^{k} x_{i}^{(0)}$$
+
+因 $\exists a_i > 0,$ 于是从任何非零点开始都将以指数般的速度发散到无穷远. 
+当且仅当初始点为 0 时, 方才收敛, 但凡有一点扰动, 都将发散 (原文似乎有一些
+不严密的地方). 文章 4 也是在梯度方向上增加扰动, 给出了几乎与维度无
+关的收敛到二阶驻点的多项式时间复杂度算法. 而且收敛速度和众所周知的
+梯度下降收敛到一阶驻点的收敛速度同步差仅一个对数因子. 该方法可直接
+用于矩阵分解问题. 
+
+文章 5 实验了使用不同大小批量训练时, 模型的收敛邻域的局部几何之
+间的区别. 结果显示, 此前人们普遍相信的鞍点困扰优化的论据其实并不存
+在在大批量训练过程中, 真正的原因是大批量训练的模型会逐渐收敛于具有
+更大的谱的区域, Hessian 矩阵的谱越大, 其对应的极值点更尖锐, 因此泛化
+更低, 但, 锐度可能不是唯一的因素.
+
+DL中的优化算法，这里采用\href{https://zhuanlan.zhihu.com/p/32230623}{Juliuszh}
+的逻辑说明:
+
+约定: 优化参数：$w$ ，目标函数：$f(w)$ ，初始学习率$\alpha$，epoch $t$。
+
+参数更新框架：
+\begin{itemize}
+	\item[1.] 计算梯度：$g_{t}=\nabla f\left(w_{t}\right)$
+	\item[2.] 计算一，二阶动量：$m_{t}=\phi\left(g_{1}, g_{2},
+	 \cdots, g_{t}\right); V_{t}=\psi\left(g_{1}, g_{2}, \cdots, g_{t}\right)$
+	\item[3.] 计算下降梯度：$\eta_{t}=\alpha \cdot m_{t} / \sqrt{V_{t}}$
+	\item[4.] 根据下降梯度更新参数： $w_{t+1}=w_{t}-\eta_{t}$
+\end{itemize}
+
+各个算法的差别：
+\begin{itemize}
+	\item SGD: $m_t=g_t; V_t=I^2$，没有动量
+	\item SGDM:$m_{t}=\beta_{1} \cdot m_{t-1}+\left(1-\beta_{1}\right) \cdot g_{t}$,
+	一阶动量是各个时刻梯度方向的指数移动平均值，约等于最近 $\frac{1}{1 - \beta_1}$ 个时刻
+	的梯度向量和的平均值, 于是下降方向由当前梯度方向和累计梯度方向共同决定.
+	\item SGDN: $g_{t}=\nabla f\left(w_{t}-\alpha \cdot m_{t-1} / \sqrt{V_{t-1}}\right)$,
+	按累计梯度方向走一步后的梯度方向和历史动量相结合.
+	\item AdaDelta:$V_{t}=\sum_{\tau=1}^{t} g_{\tau}^{2}$，用二阶动量去度量历史更新频率, 来动态调
+	节学习率 (频率越快学习率越小).
+	\item AdaDelta / RMSProp: $V_{t}=\beta_{2} * V_{t-1}+\left(1-\beta_{2}\right) g_{t}^{2}$,
+	利用指数移动平均值来计算过去一段时间梯度的二阶动量, 避免学习率递减的过快.
+	\item Adam: $m_{t}=\beta_{1} \cdot m_{t-1}+\left(1-\beta_{1}\right) \cdot g_{t}, 
+	V_{t}=\beta_{2} * V_{t-1}+\left(1-\beta_{2}\right) g_{t}^{2}$,
+	同时考虑了一二阶动量, 且都是指数移动平均值.
+	\item Nadam: Nesterov + Adam.
+\end{itemize}
+
+\textbf{问题:}
+\begin{itemize}
+	\item 1. SGD 收敛速度慢, 且不容易逃离局部最优点。从\ref{sub:lr}的
+	实验发现, 针对同样的参数, 其他优化方法在给定的函数上也很难跳出局部
+	最优点。
+	\item 2. Adam 所谓的学习率自适应并不是真的自适应, 在一些优化函数上可
+	能导致不收敛 (后期学习率有震荡现象), 可能错过全局最优 (跳出去了就很
+	难回来)
+\end{itemize}
+
+\textbf{经验:}
+\begin{itemize}
+	\item 优先考虑 SGD+Nesterov Momentum 或者 Adam
+	\item Adam 等自适应学习率算法对于稀疏数据具有优势，且收敛速度很
+	快；但精调参数的 SGD（+Momentum）往往能够取得更好的最终结果。
+	\item 先用 Adam 快速下降，再用 SGD 调优:Improving Generalization
+	Performance by Switching from Adam to SGD
+\end{itemize}
+
+最后补充两博文：一数学水平更好的\href{https://zhuanlan.zhihu.com/p/43506482}{张戎}的讲解(导师沈维孝)。
+7种优化函数在一元函数上的实验\href{https://zhuanlan.zhihu.com/p/41799394}{7优化一元函数}。
+
+\subsubsection{初始化}
+
+初始化对寻找更优的极值点来说，极为重要。这节我以几个具体的二元
+函数为例，来直观说明此问题。而关于神经网络的初始化，对模型性能的提
+升同样很重要，在同样的优化策略下，好的初始化方式，也许会带来几个百
+分点的性能提升，相反糟糕的初始化也许让你不经怀疑模型是否有问题等
+严重影响判断的现象。然而，神经网络的初始化和本节讲的具体的二元函数
+的初始化还是有其不同的地方，首先，神经是没有具体表达式的，其初始化
+的是所有可能的函数集的函数的参数，因此不同的初始化方式，将覆盖不同
+的函数集合，从而也必将影响最终模型所代表的函数与最优函数的差距。
+
+目前深度学习中，初始化方式从 pytorch 官方文档 torch.init中可知大
+概有 11 种方式，比如 uniform，normal，xavier\_uniform，kaiming\_uniform，
+orthogonal，sparse，constant 等。
+
+在上一小小节有人在一元函数上做了7种优化器的实验，这里我给出一些二元函数的实验例子。
+
+$$
+\begin{array}{l}
+	f(x, y)=\left(x^{2}+y-11\right)^{2}+\left(x+y^{2}-7\right)^{2} \quad(\text { himmelblau }) \\
+	f(x, y)=x^{3}-3 x y^{2} \quad(\text { monkey } \operatorname{sad} d l e) \\
+	\text {compleax peaks :}\\
+	f(x, y)=3 *(1-x)^{2} * e^{-x^{2}-(y+1)^{2}}-10 *\left(x / 5-x^{3}-y^{5}\right) * \\
+	\quad e^{-\left(x^{2}+y^{2}\right)}-\frac{e^{-(x+1)^{2}-y^{2}}}{3}-\frac{\sin 
+	\left(x^{2}+y^{2}\right)-\cos \left(x^{2}+y^{2}\right)}{2} \\
+	\begin{aligned}
+		
+		&\begin{aligned}
+		f(x, y) &=\sin (w x)^{2} * \sin (w y)^{2} * e^{\frac{x+y}{\sigma^{2}}}-\\
+		2 & * \sin (2 * w(x+2))^{2} * \sin (2 * w(y+2))^{2} * e^{\frac{x+y}{\sigma^{2}}}+\\
+		& \sin (3 * w(x-2))^{2} * \sin (3 * w(y-2))^{2} * e^{\frac{x+y}{\sigma^{2}}}
+		\end{aligned}\\
+		\end{aligned}
+	\end{array}
+$$
+前两个是熟知的函数，后两个是我构造的例子，主要出发点是找一个有很多波峰波谷的函数。
+
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+import numpy as np
+import torch
+from matplotlib import pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+
+
+def himmelblau(x):
+	return (x[0]**2 + x[1]-11)**2 + (x[0] + x[1]**2 -7)**2
+
+def monkey_saddle(x):
+	return (x[0]**3 - 3*x[0]*x[1]**2)
+
+def many_peaks(x):
+	return 3*(1-x[0])**2 * torch.exp(-x[0]**2-(x[1]+1)**2) - 10*(x[0]/5 - x[0]**3 - x[1]**5) * \
+		torch.exp(-x[0]**2 - x[1]**2) - torch.exp((x[0]+1)**2-x[1]**2)/3 - \
+			(torch.sin(x[0]**2+x[1]**2) - torch.cos(x[0]**2+x[1]**2))/2
+
+def complex_peaks(x, w=2, sigmma=2):
+	return torch.sin(w*x[0]**2 * torch.sin(w*x[1])**2 * torch.exp(x[0]+x[1])/sigmma**2) \
+		- 2*torch.sin(2*w*(x[0]+2))**2 * torch.sin(2*w*(x[1]+2))**2 * torch.exp((x[0]+x[1])/sigmma**2) \
+			+ torch.sin(3*w*(x[0]-2))**2 * torch.sin(3*w*(x[1]-2))**2 * torch.exp((x[0]+x[1])/sigmma**2)
+			
+
+# x = np.arange(-4, 4, 0.01)
+# y = np.arange(-4, 4, 0.01)
+# for complex_peaks function
+x = np.linspace(2, 6, 400)
+y = np.linspace(2, 6, 400)
+X, Y = np.meshgrid(x, y)
+
+# Z = himmelblau([X, Y])
+# Z = monkey_saddle([X, Y])
+Z = many_peaks([torch.from_numpy(X), torch.from_numpy(Y)]).numpy()
+# Z = complex_peaks([torch.from_numpy(X), torch.from_numpy(Y)]).numpy()
+
+fig = plt.figure('himmeblau')
+ax = fig.gca(projection='3d')
+ax.plot_surface(X, Y, Z, cmap='Accent')
+
+grad_x_sets = []
+grad_y_sets = []
+grad_z_sets = []
+
+x_0 = torch.tensor([0., 0.], requires_grad=True)
+optimizer = torch.optim.SGD([x_0], lr=0.01, momentum=0.05)
+# optimizer = torch.optim.RMSprop([x_0], lr=10, alpha=0.9)
+# optimizer = torch.optim.RMSprop([x_0], lr=10, alpha=0.9, momentum=0.85)
+# optimizer = torch.optim.Adam([x_0], betas =(0.9,0.99), lr=20)
+# lr_scheduler = CyclicLR(optimizer, base_lr=1e−2, max_lr=1e−0)
+
+for step in range (100) :
+	pred = himmelblau(x_0)
+	# pred = many_peaks(x_0)
+	# pred = complex_peaks(x_0)
+	
+	optimizer.zero_grad()
+	# lr_scheduler.batch_step()
+	# print('lr:', lr_scheduler.get_lr())
+	pred.backward()
+	optimizer.step()
+
+	grad_x_sets.append(x_0.tolist()[0])
+	grad_y_sets.append(x_0.tolist()[1])
+	grad_z_sets.append(pred.tolist())
+
+	if step % 2==1:
+		print('ste {}:x={}, f(x)={}'.format(step, x_0.tolist(),pred.item()))
+
+ax.plot(grad_x_sets, grad_y_sets, grad_z_sets, c='black', lw=4, label='gradient decent curve')
+plt.show()
+		
+\end{lstlisting}
+
+\begin{figure}[htbp]
+	\centering
+	\begin{minipage}[t]{0.48\textwidth}
+	\centering
+	\includegraphics[width=5cm, height=3cm]{./pic/himmelblau.png}
+	\caption{himmelblau}
+	\end{minipage}
+	\begin{minipage}[t]{0.48\textwidth}
+	\centering
+	\includegraphics[width=5cm,height=3cm]{./pic/complex_peaks.png}
+	\caption{complex peaks}
+	\label{complex_peaks}
+	\end{minipage}
+\end{figure}
+
+
+关于 himmelblau 函数，容易算出其四个极小值点为 (3,2), (-3.7794,-
+3.2832), (3.5845, -1.8481), (-2.8050, 3.1313) 四极值点的中心点几乎是 (0, 0)
+点，明显 (0, 0) 点于 (3, 2) 点最近，于是初始化值若为 (0, 0)，则优化到的
+极值点一般就是 (3, 2)(图例 himmelblau 中红色线条为带动量的 SGD 优化
+器优化路线), 但是当你学习率较大，比如 lr=10, 使用 adam，则结果为第二
+个极值点，lr=20 时，结果为第三个极值点等。对于 complex\_peaks，观察
+其在 $[2, 6] \times [2, 6]$ 区域内的图形，容易看出极值点密集，选取不同初始值并
+使用不同的优化器，你会发现很难找到全局的极值点，几乎都停留在初始值
+附近的波谷之中。也许神经网络的极值点也大概如此，只是波峰波谷之间的
+差距没有 complex\_peaks 函数来得大，但我们仍然要适当跳出局部极值点，
+向全局极值点逼近，关于这个问题，我想下一小节的动态调整学习率，会有一
+定的帮助 (事实上对鞍点的帮助更大，这点我将利用下一小节的策略，补充
+monkey\_saddle 函数的一些实验情况)。
+
+\subsubsection{学习率}
+涉及学习率的问题，可以有初始化学习率，学习率的变化策略两点。
+对于一个简单的曲面，我们可以根据曲面的一些性质，动态调节学习率，加速收敛，但由于DL高度非凸
+且复杂，以及实际应用中的大数据，我们只能在整体上做一些调节，比如熟知的2x step，分步减小，周期性
+变化\href{https://arxiv.org/abs/1506.01186}{Cyclical lr}，前者假设first step 已经优化到极值点
+附近，后者增加了探索性。
+最佳初始化学习率，可参考
+\label{sub:lr}
+\href{https://sgugger.github.io/how-do-you-find-a-good-learning-rate.html}{find start lr}
+这里将其改为pytorch1.x版本。
+\lstset{style=mystyle}
+\begin{lstlisting}[language=Python]
+
+def find_lr(init_value = 1e-8, final_value=10., beta = 0.98):
+	num = len(trn_loader)-1
+	mult = (final_value / init_value) ** (1/num)
+	lr = init_value
+	optimizer.param_groups[0]['lr'] = lr
+	avg_loss = 0.
+	best_loss = 0.
+	batch_num = 0
+	losses = []
+	log_lrs = []
+	for data in trn_loader:
+		batch_num += 1
+		#As before, get the loss for this mini-batch of inputs/outputs
+		inputs,labels = data
+		inputs, labels = inputs.to(device), labels.to(device)
+		optimizer.zero_grad()
+		outputs = net(inputs)
+		loss = criterion(outputs, labels)
+		#Compute the smoothed loss
+		avg_loss = beta * avg_loss + (1-beta) *loss.data[0]
+		smoothed_loss = avg_loss / (1 - beta**batch_num)
+		#Stop if the loss is exploding
+		if batch_num > 1 and smoothed_loss > 4 * best_loss:
+			return log_lrs, losses
+		#Record the best loss
+		if smoothed_loss < best_loss or batch_num==1:
+			best_loss = smoothed_loss
+		#Store the values
+		losses.append(smoothed_loss)
+		log_lrs.append(math.log10(lr))
+		#Do the SGD step
+		loss.backward()
+		optimizer.step()
+		#Update the lr for the next step
+		lr *= mult
+		optimizer.param_groups[0]['lr'] = lr
+	return log_lrs, losses
+\end{lstlisting}
+
+这里用 CycleLR，来测试一下上小节给的函数，实验参
+数略，实验结果总结起来大致有：针对 complex\_peak 函数，当学习率$ < 1$
+时，除 SGD 外各个优化器都很难跳出局部最优；学习率过小且带动量，则
+连局部极值点都很难收敛到；学习率大于一定阈值，各优化器均可以跳出
+去... ，对于 himmelblau 函数，当其收敛到某一极值点后，各优化器在循环学
+习率更新策略下均很难跳出去。以下为梯度更新方向示例图。
+
+\begin{figure}[htbp]
+	\centering
+	\begin{minipage}[t]{0.48\textwidth}
+	\centering
+	\includegraphics[width=5cm, height=3cm]{./pic/rmsprop_momentum.png}
+	\caption{rmsprop momentum}
+	\end{minipage}
+	\begin{minipage}[t]{0.48\textwidth}
+	\centering
+	\includegraphics[width=5cm,height=3cm]{./pic/sgd_mometum.png}
+	\caption{sgd mometum}
+	\label{decent curve}
+	\end{minipage}
+\end{figure}
+
+想象一下，要想跳出局部极值点，必须增加探索的范围，或者在极值区域附近，疯狂增加学习率，
+并记录很多中间结果，然后采用回溯的方式，进行更新。只是这样，代码复杂，速度很慢，而且实际情况是DL
+很多极值点的高度都差不多(\ref{all not diff})。
+
+
+\subsection{post\_processing}
+有很多nms，文字，旋转，多边形，mask，等nms，相关描述暂略，代码可参考lib\_functions文件夹。
 
 \section{数据处理}
 \label{sec:detail}
