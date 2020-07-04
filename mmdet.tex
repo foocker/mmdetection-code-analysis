@@ -287,19 +287,54 @@ def build_from_cfg(cfg, registry, default_args=None):
 
 \section{数据处理}
 \label{sec:detail}
-数据处理可能是炼丹师接触最为密集的了，因为通常情况，除了数据的离线处理，写个数据类，就可以炼丹了。但本节主要涉及数据的在线处理，更进一步应该是检测分割数据的pytorch处理方式。虽然mmdet将常用的数据都实现了，而且也实现了中间通用数据格式，但，这和模型，损失函数，性能评估的实现也相关，比如你想把官网的centernet完整的改成mmdet风格，就能看到(看起来没必要)。
+数据处理可能是炼丹师接触最为密集的了，因为通常情况，除了数据的离线处理，写个数据类，就可以炼丹了。本节主要涉及数据的在线处理，
+更进一步应该是检测分割数据的pytorch处理方式。虽然mmdet将常用的数据都实现了，而且也实现了中间通用数据格式，但，这和模型，损失函数，
+性能评估的实现也相关，比如你想把官网的centernet完整的改成mmdet风格，就能看到(看起来没必要)。
+
+Data processing may be the most intensive contact with alchemy masters, because usually, in addition to offline
+data processing, write a data class, you can alchemy. This section mainly deals with online processing of data, 
+and further should be the pytorch processing method for detecting segmented data. Although mmdet implements all 
+commonly used data and also implements the intermediate general data format, this is also related to the implementation 
+of models, loss functions, and performance evaluation, so you want to completely rewrite an algorithm implemented by a 
+third party as There are still a lot of changes to the mmdet style. For example, if you want to rewrite the official centernet, 
+you can see it (although it seems unnecessary).
 
 \subsection{检测分割数据}
-看看配置文件，数据相关的有data dict，里面包含了train,val,test的路径信息，用于数据类初始化,有pipeline，将各个函数及对应参数以字典形式放到列表里，是对pytorch原装的transforms+compose，在检测，分割相关数据上的一次封装，使得形式更加统一。
+看看配置文件，数据相关的有data dict，里面包含了train,val,test的路径信息，用于数据类初始化,有pipeline，
+将各个函数及对应参数以字典形式放到列表里，是对pytorch原装的transforms+compose，在检测，分割相关数据上的一次封装，使得形式更加统一。
 
-从builder.py中build\_dataset函数能看到，构建数据有三种方式，ConcatDataset，RepeatDataset和从注册器中提取。其中dataset\_wrappers.py中ConcatDataset和RepeatDataset意义自明，前者继承自pytorch原始的ConcatDataset，
+Take a look at the configuration file, the data is related, data dict, which contains the path information of train, 
+val, test, used for data class initialization, pipeline, put each function and corresponding parameters into the list 
+in the form of a dictionary,It is a encapsulation of the original transformations+compose of pytorch in the detection 
+and segmentation of relevant data, making the form more uniform.
+
+从builder.py中build\_dataset函数能看到，构建数据有三种方式，ConcatDataset，RepeatDataset和从注册器中提取。
+其中dataset\_wrappers.py中ConcatDataset和RepeatDataset意义自明，前者继承自pytorch原始的ConcatDataset，
 将多个数据集整合到一起，具体为把不同序列(可参考\href{https://docs.python.org/zh-cn/3/library/collections.abc.html}
 {容器的抽象基类})的长度相加，\_\_getitem\_\_函数对应index替换一下。
 后者就是单个数据类(序列)的多次重复。就功能来说，前者提高数据丰富度，后者可解决数据太少使得loading时间长的问题(见代码注释)。
 而被注册的数据类在datasets下一些熟知的数据名文件中。其中，基类为custom.py中的CustomDataset，coco继承自它，
-cityscapes继承自coco，xml\_style的XMLDataset继承CustomDataset，然后wider\_face，voc均继承自XMLDataset。因此这里先分析一下CustomDataset。
+cityscapes继承自coco，xml\_style的XMLDataset继承CustomDataset，然后wider\_face，voc均继承自XMLDataset。
+因此这里先分析一下CustomDataset。
 
-CustomDataset 记录数据路径等信息，解析标注文件，将每一张图的所有信息以字典作为数据结构存在results中，然后进入pipeline:数据增强相关操作，代码如下：
+You can see from the build\_dataset function in builder.py that there are three ways to build data, ConcatDataset,
+RepeatDataset and extract from the registrar. Among them, the meaning of ConcatDataset and RepeatDataset 
+in dataset\_wrappers.py is self-evident. The former inherits from the original ConcatDataset of pytorch and integrates 
+multiple data sets together, specifically for different sequences 
+(refer to \href{https://docs.python.org /zh-cn/3/library/collections.abc.html}{abstract base class of container}), 
+the length of the \_\_getitem\_\_ function is replaced by the corresponding index. The latter is multiple repetitions 
+of a single data class (sequence). In terms of functionality, the former improves data richness, and the latter can solve 
+the problem of too little data making the loading time long (see code comments). The registered data classes are in 
+some well-known data name files under datasets. Among them, the base class is CustomDataset in custom.py, coco inherits 
+from it, cityscapes inherits from coco, xml\_style XMLDataset inherits CustomDataset, then wider\_face, voc all inherit 
+from XMLDataset.Therefore, first analyze the CustomDataset here.
+
+CustomDataset 记录数据路径等信息，解析标注文件，将每一张图的所有信息以字典作为数据结构存在results中，然后进入pipeline:
+数据增强相关操作，代码如下：
+
+CustomDataset records information such as the data path, parses the annotation file, stores all the information of 
+each picture in the results as a data structure in the dictionary, and then enters the pipeline for data enhancement 
+related operations, the code is as follows:
 
 \lstset{style=mystyle}
 \begin{lstlisting}[language=Python]
@@ -335,13 +370,32 @@ def __getitem__(self, idx):
 		return data
 \end{lstlisting}
 
-这里数据结构的选取需要注意一下，字典结构，在数据增强库albu中也是如此处理，因此可以快速替换为albu中的算法。另外每个数据类增加了各自的evaluate函数。evaluate基础函数在mmdet.core.evaluation中，后做补充。
+这里数据结构的选取需要注意一下，字典结构，在数据增强库albu中也是如此处理，因此可以快速替换为albu中的算法。另外每个数据类增加了
+各自的evaluate函数。evaluate基础函数在mmdet.core.evaluation中，后做补充。
 
-mmdet的数据处理，\textbf{字典结构}，\textbf{pipeline}，\textbf{evaluate}是三个关键部分。其他所有类的文件解析部分，数据筛选等，看看即可。因为我们知道，pytorch读取数据，是将序列转化为迭代器后进行io操作，所以在dataset下除了pipelines外还有loader文件夹，里面实现了分组，分布式分组采样方法，以及调用了mmcv中的collate函数(此处为1.x版本，2.0版本将loader移植到了builder.py中)，且build\_dataloader封装的DataLoader最后在
-train\_detector中被调用，这部分将在后面补充，这里说说pipelines。
+The dictionary structure is also handled in the data enhancement library albu, so it can be quickly replaced with the enhancement algorithm in the albu. 
+In addition, each data class adds its own evaluate function. The basic function of evaluate is in mmdet.core.evaluation, 
+which will be added later.
 
-返回maskrcnn的配置文件(1.x,2.0看base config)，可以看到训练和测试的不同之处：LoadAnnotations，MultiScaleFlipAug，DefaultFormatBundle和Collect。
-额外提示，虽然测试没有LoadAnnotations，根据CustomDataset可知，它仍需标注文件，这和inference的pipeline不同，也即这里的test实为evaluate。
+mmdet的数据处理，\textbf{字典结构}，\textbf{pipeline}，\textbf{evaluate}是三个关键部分。其他所有类的文件解析部分，数据筛选等，看看即可。
+因为我们知道，pytorch读取数据，是将序列转化为迭代器后进行io操作，所以在dataset下除了pipelines外还有loader文件夹，里面实现了分组，
+分布式分组采样方法，以及调用了mmcv中的collate函数(此处为1.x版本，2.0版本将loader移植到了builder.py中)，且build\_dataloader封装的
+DataLoader最后在train\_detector中被调用，这部分将在后面补充，这里说说pipelines。
+
+The data processing of mmdet, \textbf{dictionary structure}, \textbf{pipeline}, \textbf{evaluate} are three key parts. 
+All other types of file analysis, data filtering, etc., just look. We know that pytorch reads data, converts the sequence 
+into an iterator, and then performs io operations. Therefore, in addition to pipelines, a loader is required. The loader 
+implements sequence iteration, including grouping, distributed group sampling, collate\_fn, etc., see builder\.py file, 
+the DataLoader encapsulated by its build\_dataloader is finally called in train\_detector, this part will be added later, 
+here to talk about pipelines.
+
+返回maskrcnn的配置文件(1.x,2.0看base config)，可以看到训练和测试的不同之处：LoadAnnotations，MultiScaleFlipAug，
+DefaultFormatBundle和Collect。额外提示，虽然测试没有LoadAnnotations，根据CustomDataset可知，它仍需标注文件，
+这和inference的pipeline不同，也即这里的test实为evaluate。
+
+Return to the maskrcnn configuration file (1.x, 2.0 see base config), you can see the difference between training and testing: LoadAnnotations, 
+MultiScaleFlipAug, DefaultFormatBundle and Collect. Extra tip, although the test does not have LoadAnnotations, according to CustomDataset, 
+it still needs to annotate the file, which is different from the pipeline of inference, that is, the test here is actually evaluated.
 
 \lstset{style=mystyle}
 \begin{lstlisting}[language=Python]
@@ -374,7 +428,7 @@ test_pipeline = [
 ]
 \end{lstlisting}
 最后这些所有操作被Compose串联起来，代码如下：
-
+Finally, all these operations are connected by Compose, the code is as follows:
 \lstset{style=mystyle}
 \begin{lstlisting}[language=Python]
 @PIPELINES.register_module
@@ -402,6 +456,11 @@ class Compose(object):
 上面代码能看到，配置文件中pipeline中的字典传入build\_from\_cfg函数，逐一实现了各个增强类(方法)。
 扩展的增强类均需实现\_\_call\_\_方法，这和pytorch原始方法是一致的。
 
+The above code can see that the dictionary in the pipeline in the configuration file 
+is passed into the build\_from\_cfg function, and each enhanced class (method) is 
+implemented one by one. The extended enhancement classes all need to implement the 
+\_\_call\_\_ method, which is consistent with the original method of pytorch.
+
 
 有了以上认识，重新梳理一下pipelines的逻辑，由三部分组成，load，transforms，和format。
 load相关的LoadImageFromFile，LoadAnnotations都是字典results进去，字典results出来。具体代码看下便知，
@@ -411,6 +470,18 @@ LoadImageFromFile增加了'filename'，'img'，'img\_shape'，'ori\_shape','pad\
 transforms中的类作用于字典的values，也即数据增强。format中的DefaultFormatBundle是将数据转成mmcv扩展的容器类格式DataContainer。
 另外Collect会根据不同任务的不同配置，从results中选取只含keys的信息生成新的字典，具体看下该类帮助文档。
 这里看一下从numpy转成tensor的代码:
+
+With the above understanding, we reorganize the logic of pipelines, which consists of three parts, load, transforms, 
+and format. Load-related LoadImageFromFile, Load Annotations are all dictionary in, dictionary out. LoadImageFromFile 
+added 'filename,'img','img$\_$shape','ori$\_s$hape','pad$\_$s \newline
+hape','scale$\_$factor','img$\_$norm$\_$cfg' fields. 
+Where img is in numpy format. LoadAnnotations parses out bboxs, masks, labels and other information from results['ann\_info'].
+Note that the original analysis of the coco format comes from pycocotools, including its evaluation method. The key here is 
+the dictionary structure (this is related to the model loss function, evaluation, etc., and the unified structure makes the 
+code unified). The classes in transforms act on dictionary values, that is, data enhancement. The DefaultFormatBundle in the 
+format is the container class format DataContainer that converts the data into mmcv extension. In addition, Collect will select 
+the information containing only the keys from the results to generate a new dictionary according to the different configurations 
+of different tasks. For details, see the help documentation of this type. Here is a look at the code from numpy to tensor:
 
 \lstset{style=mystyle}
 \begin{lstlisting}[language=Python]
@@ -442,7 +513,17 @@ cpu\_only，stack，padding\_value，pad\_dims，其含义自明，以及size，
 于是有了DataContainer。它可以做到载入GPU的数据可以保持统一shape，并被stack，也可以不stack，也可以保持原样，或者在非batch维度上做pad。
 当然这个也要对default\_collate进行改造，mmcv在parallel.collate中实现了这个。
 
+So what is DataContainer? It is the encapsulation of tensor, which converts the tensor in the results to DataContainer format. 
+In fact, it only adds a few property functions.cpu\_only, stack, padding\_value, pad\_dims, meaning self-explanatory, and size 
+and dim are used to obtain the dimension and shape information of the data. Considering that the sequence data needs to enter 
+the model in batch mode when entering the DataLoader, then the usual collate\_fn will require the shape of the tensor data to 
+be consistent. But this is not very convenient, DataContainer does not need this restriction. It can achieve the uniform shape 
+of the data loaded into the GPU and be stacked, or not stacked, as it is, or as a pad in a non-batch dimension. Of course, this 
+also needs to rewrite the default\_collate function, mmcv realizes this in parallel.collate.
+
 collate\_fn是DataLoader中将序列dataset组织成batch大小的函数，这里帖三个普通例子：
+
+collate\_fn is a function in DataLoader that organizes sequence datasets into batch sizes. Here are three common examples:
 
 \lstset{style=mystyle}
 \begin{lstlisting}[language=Python]
@@ -487,6 +568,10 @@ def detection_collate_3(batch):
 
 以上就是数据处理的相关内容。
 最后再用DataLoader封装拆成迭代器，其相关细节，sampler等暂略。
+
+The above is the relevant content of data processing. Finally, the DataLoader is used to encapsulate 
+and disassemble the iterator, and its related details, sampler, etc. are temporarily omitted.
+
 \lstset{style=mystyle}
 \begin{lstlisting}[language=Python]
 data_loader = DataLoader(
@@ -507,6 +592,10 @@ runner.py->mmcv/hook.py(后面是分散的),其中runner维护了数据信息,�
 日志系统,训练loop中的各节点信息,模型保存,学习率等.另外补充一点,以上包装过程,
 在mmdet中无处不在,包括mmcv的代码也是对日常频繁使用的函数进行了统一封装.
 
+The training process is roughly as follows: tools/train.py->apis/train.py->mmcv/
+runner.py->mmcv/hook.py, where the runner maintains data information, optimizer, log, 
+information of each node in the training loop, model saving, learning rate, etc.
+
 \label{trainpipeline}
 \subsection{训练逻辑}
 图见\ref{trainpipe_pic},注意它的四个层级.代码上,主要查看apis/train.py, mmcv中的runner相关文件.核心围绕Runner,Hook两个类.
@@ -514,7 +603,20 @@ Runner将模型,批处理函数batch\_pro
 cessor,优化器作为基本属性,训练过程中与训练状态,各节点相关的信息
 被记录在mode,\_hooks,\_epoch,\_iter,\_inner\_iter,\_max\_epochs,
 \_max\_iters中，这些信息维护了训练过程中插入不同hook的操作方式.
-理清训练流程只需看Runner的成员函数run.在run里会根据mode按配置中workflow的epoch循环调用train和val函数,跑完所有的epoch.比如train:
+理清训练流程只需看Runner的成员函数run.在run里会根据mode按配置中workflow的epoch循环调用train和val函数,跑完所有的epoch.
+比如train:
+
+See \ref{trainpipe_pic}, pay attention to its four levels. On the code, mainly
+check the runner-related files in apis/train.py, mmcv. The core is around Runner and Hook.
+Runner uses the model, batch function batch\_processor, and optimizer as basic attributes.
+In the training process, the information related to the training state and each node is recorded 
+in mode,\_hooks,\_epoch,\_iter,\_i \newline
+nner\_iter,\_max \_epochs,\_max\_iters, this information maintains 
+the operation method of inserting different hooks during the training process. To clarify the training 
+process, you only need to look at the runner’s member function run. In the run, the epoch cycle of the 
+workflow in the configuration will be called according to the mode. The train and val functions run all 
+epochs. For example, train:
+
 \lstset{style=mystyle}
 \begin{lstlisting}[language=Python]
  def train(self, data_loader, **kwargs):
@@ -537,7 +639,19 @@ cessor,优化器作为基本属性,训练过程中与训练状态,各节点相�
 
 \end{lstlisting}
 
-上面需要说明的是自定义hook类,自定义hook类需继承mmcv的Hook类,其默认了6+8+4个成员函数,也即\ref{trainpipe_pic}所示的6个层级节点,外加2*4个区分train和val的节点记录函数,以及4个边界检查函数.从train.py中容易看出,在训练之前,已经将需要的hook函数注册到Runner的self.\_hook中了,包括从配置文件解析的优化器,学习率调整函数,模型保存,一个batch的时间记录等(注册hook算子在self.\_hook中按优先级升序排列).这里的call\_hook函数定义如下:
+上面需要说明的是自定义hook类,自定义hook类需继承mmcv的Hook类,其默认了6+8+4个成员函数,也即\ref{trainpipe_pic}所示的6个层级节点,
+外加2*4个区分train和val的节点记录函数,以及4个边界检查函数.从train.py中容易看出,在训练之前,已经将需要的hook函数注册到Runner的
+self.\_hook中了,包括从配置文件解析的优化器,学习率调整函数,模型保存,一个batch的时间记录等(注册hook算子在self.\_hook中按优先级
+升序排列).这里的call\_hook函数定义如下:
+
+What needs to be explained above is the custom hook class. The custom hook class needs to inherit the mmcv 
+Hook class, which defaults to 6+8+4 member functions, 6 level nodes shown by \ref{trainpipe_pic},
+2*4 node recording functions that distinguish train and val, and 4 boundary check functions.
+It is easy to see from train.py that before training, the required hook function has been registered in 
+the runner's self.\_hook , Including optimizer parsed from configuration file, learning rate adjustment 
+function, model saving, time record of a batch, etc. (register hook operator in self.\_hook by priority
+(Ascending order). The call\_hook function is defined as follows:
+
 \lstset{style=mystyle}
 \begin{lstlisting}[language=Python]
 def call_hook(self, fn_name):
@@ -546,6 +660,9 @@ def call_hook(self, fn_name):
 \end{lstlisting}
 
 容易看出,在训练的不同节点,将从注册列表中调用实现了该节点函数的类成员函数.比如
+
+It is easy to see that at different nodes of training, class member 
+functions that implement the function of the node will be called from the registration list.
 
 \lstset{style=mystyle}
 \begin{lstlisting}[language=Python]
@@ -567,8 +684,14 @@ class OptimizerHook(Hook):
 \end{lstlisting}
 将在每个train\_iter后实现反向传播和参数更新.
 
+Backpropagation and parameter update will be implemented after each train\_iter
+
 学习率优化相对复杂一点,其基类LrUpdaterHook,实现了before\_run, before\_train\_epoch, before\_train\_iter三个hook函数,意义自明.
 这里选一个余弦式变化,稍作说明:
+
+The optimization of learning rate is relatively complicated.The base class LrUpdaterHook implements the 
+three hook functions before\_run, before\_train\_epoch, before\_train\_iter, and the meaning is self-evident.
+Choose a cosine change here, a little explanation:
 
 \lstset{style=mystyle}
 \begin{lstlisting}[language=Python]
@@ -592,22 +715,50 @@ class CosineLrUpdaterHook(LrUpdaterHook):
 后者表明一个epoch内不同batch的学习率可以不同,因为没有什么理论,所有这两种方式都行.
 其中base\_lr为初始学习率,target\_lr为学习率衰减的上界,而当前学习率即为返回值.
 
+As can be seen from get\_lr, there are two types of learning rate conversion 
+cycles, epoch->max\_epoch, or a larger iter->max\_iter, the latter shows that 
+the learning rate of different batches in an epoch can be different, because 
+there is no Any theory, all these two methods will work. Among them, base\_lr 
+is the initial learning rate, target\_lr is the upper bound of the learning rate 
+decay, and the current learning rate is the return value.
 
 
 \section{Core}
 
 \subsection{anchor}
 \label{core:anchor}
-anchor首先来源于rcnn，在我看来，anchor利用强监督的特点，在原图上构造了完整的bbox空间(非数学意义的空间),然后根据人为标定bbox，选出有效的拟合集合(子空间，非严格表达)，从而使得优化变得更有效(原本是实现了end2end)。
+anchor首先来源于rcnn，在我看来，anchor利用强监督的特点，在原图上构造了完整的bbox空间(非数学意义的空间),然后根据人为标定bbox，
+选出有效的拟合集合(子空间，非严格表达)，从而使得优化变得更有效(原本是实现了end2end)。
+
+The anchor first comes from rcnn. In my opinion, anchor uses the characteristics of strong supervision 
+to construct a complete bbox space (a space with no mathematical meaning) on the original image, and 
+then calibrates the bbox according to man-made, and selects an effective fitting set (sub Space, 
+non-strict expression), so that the optimization becomes more effective (the original goal is end2end).
 
 AnchorGenerator类为不同特征层生成anchor,其中特征层上单个像素的anchor是以此像素为中心，
 按给定的尺度和扩展比率生成，也即一个像素对应的anchor数为len(scales)*len(ratios)。
+
+The AnchorGenerator class generates anchors for different feature layers, where the anchor of a single
+ pixel on the feature layer is centered on this pixel and is generated at a given scale and expansion 
+ ratio, that is, the number of anchors corresponding to a pixel is len(scales)*len( ratios).
 
 输入参数base\_size, scales, ratios一般作用于非retinta类网络，含义分别表示:anchor在特征层上的基础大小(特征层相对于原图的stride),anchor在特征层上的尺度大小(可以多个，增加感受野),anchor在保持基础大小不变的情况下的长宽比.
 比如输入图像大小(640*640), 选择(p2, p3)作为其特征层,则p2大小为(160*160),base\_ size=4,若设定ratios=[0.5,1.0,2.0], scales=[8, 16],
 则在p2上一格对应的base\_anchor的(w,h)为[(45.25,22.63),  (90.51, 45.25),
  (32.00, 32.00),  (64.00, 64.00), (22.63, 45.25),(45.25, 90.51)].其中$64=4*16*1,90.51=4*16*\sqrt{2}, 22.63=4*8/\sqrt{2}.$
  那么每一格所对应的6个base\_anchor相对于中心点的偏移量即为(v2.0不取整):
+
+ The input parameters base\_size, scales, ratios generally act on non-retinta-type networks, meaning 
+ respectively: the basic size of the anchor on the feature layer (the stride of the feature layer 
+ relative to the original image), the scale size of the anchor on the feature layer (can Multiple, 
+ increase the receptive field), the aspect ratio of anchor under the condition of keeping the basic 
+ size unchanged. For example, input image size (640*640), choose (p2, p3) as its feature layer, 
+ then p2 size is (160 *160), base\_ size=4, if ratios=[0.5,1.0,2.0], scales=[8, 16], then the 
+ corresponding base\_anchor's (w,h) on p2 is: [(45.25,22.63), (90.51, 45.25),(32.00, 32.00), (
+64.00, 64.00), (22.63, 45.25),(45.25, 90.51)]. Among them 
+$64=4*16*1,90.51=4 *16*\sqrt{2}, 22.63=4*8/\sqrt{2}.$ Then the offset of the 6 
+base\_anchor corresponding to each grid relative to the center point is (v2.0 does not take rounding):
+
 \lstset{style=mystyle}
 \begin{lstlisting}[language=Python]
 	
@@ -622,12 +773,24 @@ AnchorGenerator类为不同特征层生成anchor,其中特征层上单个像素�
 
 而retina等网络会存在octave\_base\_scale,scales\_per\_octave，其含义和上面保持对应。
 
+The meaning of octave\_base\_scale, scales\_per\_octave of retina and other networks remains the same as above.
+
 因为此处得到的anchor是以特征图为坐标系的,所以要得到原图上的anchor,还得把中心点变为对应到原图的上的点。
 那么回到源代码，容易看出，gen\_single\_level\_base\_anchors得到单个特征层的所有anchor，gen\_base\_anchors将
 不同特征层的anchor汇集到列表里，single\_level\_grid
-\_anchors将单个特征层的anchor变为原图中，grid\_anchors则将
-所有特征汇集到列表中，列表每个元素为一个tensor,记录了对应特征层上的所有anchor坐标。
+\_anchors将单个特征层的anchor映射到原图坐标，grid\_anchors则
+汇集所有相对原图的anchor到列表中，列表每个元素为一个tensor,记录了某个特征层上的所有anchor。
 代码涉及到两个技巧:
+
+Because the anchor obtained here is based on the feature map as the coordinate system, to get 
+the anchor on the original image, the center point must be changed to the point corresponding 
+to the original image. So back to the source code, it is easy to see that 
+gen\_single\_level\_base\_anchors gets all the anchors of a single feature layer, 
+gen\_base\_anchors puts the anchors of different feature layers into the list, 
+single\_level\_grid\_anchors The anchors of a single feature layer are mapped to the coordinates 
+of the original image. grid\_anchors collects all the anchors relative to the original image into a list. 
+Each element of the list is a tensor, which records all the anchors on a feature layer. The code involves 
+two tricks:
 \lstset{style=mystyle}
 \begin{lstlisting}[language=Python]
 # 1.gen_single_level_base_anchors
@@ -641,7 +804,7 @@ shifts = shifts.type_as(base_anchors)
 # add A anchors (1, A, 4) to K shifts (K, 1, 4) to get
 # shifted anchors (K, A, 4), reshape to (K*A, 4)
 # base_anchors:(fw*hw*num_anchors, 4), shifts:(fw*hw, 4)
-all_anchors = base_anchors[None, :, :] + shifts[:, None, :]    ＃此处直接理解较难
+all_anchors = base_anchors[None, :, :] + shifts[:, None, :]    ＃Automatic tensor expansion
 all_anchors = all_anchors.view(-1, 4)
 \end{lstlisting}
 
@@ -670,6 +833,7 @@ class PointGenerator(object):
 \end{lstlisting}
 
 代码上，主要的难点在于高维张量的处理。
+In code implementation, the main difficulty lies in the processing of high-dimensional tensors.
 
 \subsection{bbox}
 
@@ -679,8 +843,19 @@ bbox的编码是基础重要的，一家之言：anchor genertor让优化空间�
 表示方式的CenterNet，对$w, h$做回归，就没有编码，直接拟合$\Delta w, \Delta h$，但它是在下采样$1/4$后的特征图上，
 也即尺度上还是除了4。总归而言，要让优化对象存在一个合理的空间上，才是本质的。
 
+The bbox encoding is fundamentally important. statements of a school: anchor genertor makes the optimization space 
+reasonable, and bbox encoding makes the optimization more reasonable (guided anchor is between these two). 
+Usually bbox does not even do normalization, the effect will not be good (you can try retinaface). 
+But in different method systems, it is not easy to say, for example, CenterNet in the form of center point, 
+for regression of $w, h$, there is no coding, directly fitting $\Delta w, \Delta h$, but it is On the 
+feature map after downsampling $1/4$, that is, the scale is still divided by 4. In short, it is essential 
+for the optimized objects to exist in a reasonable space.
+
 one, two stage的bbox编码方式，来源于14年Ross Girshick等人写的rcnn，
 其编码为
+
+The one and two stage bbox encoding method is derived from the rcnn written by Ross Girshick and others in 2014, 
+and its encoding is
 $$
 \begin{aligned}
 	t_{x} &=\left(G_{x}-P_{x}\right) / P_{w} \label{1} \\
@@ -690,8 +865,10 @@ $$
 \end{aligned}
 $$
 此处$P$是anchor，$G$是标框。
+$P$ is anchor, and $G$ is true label.
 
 解码为：
+decoded as:
 $$
 \begin{aligned}
 	\hat{G}_{x} &=P_{w} d_{x}(P)+P_{x} \\
@@ -709,6 +886,8 @@ $$
 % 关于这种编码的合理性，见\ref{sub:anchorhead}的分析。
 
 那么代码如何实现呢？
+
+How is the code implemented?
 
 \lstset{style=mystyle}
 \begin{lstlisting}[language=Python]
@@ -761,19 +940,41 @@ stack, new\_tensor, unsqueeze, div\_可以学习一下。另外为何$\Delta$坐
 但可以理解，cv论文经常这样)要做高斯归一化变换呢？可参考\href{https://arxiv.org/abs/1904.04620}{Gaussian YOLOv3}。
 我的理解，将优化空间映射到高斯$\mu-\sigma$分布中。
 
+Basic tensor operators such as stack, new\_tensor, unsqueeze, div\_, etc. are used here. In addition, why does 
+the $\Delta$ coordinate system (not rigorous, but understandable) do Gaussian normalized transformation? 
+Refer to \href{https://arxiv.org/abs/1904.04620}{Gaussian YOLOv3}. My understanding is to map the optimization 
+space to the Gaussian $\mu-\sigma$ distribution.
+
 在解码函数delta2bbox有如下函数需要注意一下(tensor.*)：
 repeat, clamp, expand\_as, exp, torch.addcmul, view\_as。
+
+In the decoding function delta 2 bbox, the following functions need to be mastered (tensor.*):
+repeat, clamp, expand\_as, exp, torch.addcmul, view\_as, these basic functions are necessary skills to implement
+the detection algorithm.
 
 另外一种编码方式，来自19年Chenchen Zhu等人写的\href{https://arxiv.org/abs/1903.00621}{FSAF}。
 将(x1, y1,x2, y2)编码为(top, bottom, left, right)，含义自明。代码上需要注意的是$w, h$的归一化以及整体
 的归一化因子，默认除以4。此编码对应的bbox loss 也将变为Iou 系列 Loss， 若说明，也应该是在模型解析部分补充。
 
+Another encoding method is from \href{https://arxiv.org/abs/1903.00621}{FSAF} written by Chenchen Zhu 
+et al in 2019. $(x1, y1, x2, y2)$ is encoded as (top, bottom, left, right), meaning self-explanatory. 
+The code needs to pay attention to the normalization of $w, h$ and the overall normalization factor, 
+which is divided by 4 by default. The bbox loss corresponding to this code will also become the Iou 
+series Loss. If stated, it should also be added in the model analysis part.
+
 \subsubsection{assigners}
 assign主要给特征图上的anchor赋予有意义的监督信息，从而使优化更为有效。那么自然他的参数至少包含
 anchors,gt\_bboxes,gt\_labels。实际因为数据的复杂，或许有gt\_bboxes\_ignore等信息。
 assign的机制可总结为如下四点:
+
+Assign mainly assigns meaningful supervision information to the anchors on the feature map,
+ making optimization more effective. Then naturally its parameters include at least anchors, 
+ gt\_bboxes, gt\_labels. Actually, because of the complexity of the data, there may be information 
+ such as gt\_bboxes\_ignore.
+The assign mechanism can be summarized as follows:
+
 \begin{itemize}
-    \item[1.] 将所有框置为背景(label置-1)
+    \item[1.] 将所有框置为背景(label置-1)  Set all boxes as background (label set -1)
     \item[2.] 将与所有gts的iou小于neg\_iou\_thr的置为０
     \item[3.] 将与所有gt的max(iou)大于pos\_iou\_thr的框置为对应gt
     \item[4.] 对每个gt,将与其iou最大的框置为gt
@@ -824,8 +1025,20 @@ sample主要为two-stage服务.已实现的有RandomSampler，CombinedSampler,OH
 \_sample\_neg两函数.按照python的语法，子类可以使用raise　NotImplementedError来避免不能实例化的问题，PseudoSampler即是如此,它重写了sample函数,该函数并没有做任何筛选。RandomSampler可算中间类，意思自明。
 另外，采样只是在做bbox的index选取，并不会改变bbox等的形状，这在最后算损失函数时，只需要乘以选取的mask即可。
 
+The sample is mainly for two-stage services. The implemented ones are RandomSampler, CombinedSampler, 
+OHEMSampler, InstanceBalancedPosSampler, IoUBalancedNegSampler. These all inherit 
+from the abstract class BaseSampler, and the classes that inherit from it must complete 
+the two functions \_sample\_pos,\_sample\_neg. According to Python's syntax, subclasses can use 
+raiseNotImplementedError to avoid problems that cannot be instantiated. This is the case with 
+PseudoSampler. It rewrites the sample function, which does not do any filtering. RandomSampler 
+can be regarded as an intermediate class, and the meaning is self-evident. In addition, 
+the sampling is just doing the index selection of bbox, and does not change the shape of bbox, etc. 
+When calculating the loss function at the end, it only needs to be multiplied by the selected mask.
+
 \subsubsection{iou\_calculators}
 torch版本的iou计算，主要注意点是张量计算，广播机制。
+
+Torch version of iou calculation, the main points of attention are tensor calculation, broadcast.
 
 \lstset{style=mystyle}
 \begin{lstlisting}[language=Python]
@@ -839,33 +1052,145 @@ lt = torch.max(bboxes1[:, None, :2], bboxes2[:, :2])  # 这里m!=n, [m, None, 2]
 mAP的含义可以参考\href{https://zhuanlan.zhihu.com/p/55575423}{mmAP浅析一}
 我就不滥竽充数了,将其部分摘录于此:
 
+The meaning of mAP can refer to \href{https://zhuanlan.zhihu.com/p/55575423}{mmAP Analysis 1}
+I won't overdo it, I will extract some of them here:
+
 "
-我们都知道，评价一个图像分类结果的性能，只需要看预测类别是否正确即可，在一个数据集上面，我们可以很容易地得出一个平均准确率。可是目标检测的输出目标数量和真实目标数量都是不固定的（前文提到的非结构化的特性），因此评判时要考虑的就不仅是“对错”这么简单了，我们需要考虑的有：如果漏掉了一个目标对性能有多大损伤？如果多检测出了一个目标对性能有多大损伤？如果检测出来的位置信息有所偏差对性能有多大损伤？进一步地，在这么多的检测结果中，总有一些是检测器十分笃定的，有一些是模棱两可的。如果检测器对多检测出来的那个目标本身也不太确定呢？如果检测器最满意最信任的那个检测结果出错了呢？换言之：一个检测结果对性能的影响，是否应该和检测器对它的满意程度（置信度）相关？以及，检测错了一个稀有的物体和检测错了一个常见的物体所带来的性能损伤是否应该相同？......
+我们都知道，评价一个图像分类结果的性能，只需要看预测类别是否正确即可，在一个数据集上面，我们可以很容易地得出一个平均准确率。
+可是目标检测的输出目标数量和真实目标数量都是不固定的（前文提到的非结构化的特性），因此评判时要考虑的就不仅是“对错”这么简单了，
+我们需要考虑的有：如果漏掉了一个目标对性能有多大损伤？如果多检测出了一个目标对性能有多大损伤？如果检测出来的位置信息有所偏差对性
+能有多大损伤？进一步地，在这么多的检测结果中，总有一些是检测器十分笃定的，有一些是模棱两可的。如果检测器对多检测出来的那个目标本
+身也不太确定呢？如果检测器最满意最信任的那个检测结果出错了呢？换言之：一个检测结果对性能的影响，是否应该和检测器对它的满意程度
+（置信度）相关？以及，检测错了一个稀有的物体和检测错了一个常见的物体所带来的性能损伤是否应该相同？......
+
+We all know that to evaluate the performance of an image classification result, we only need to see whether 
+the predicted category is correct. On a data set, we can easily get an average accuracy.
+However, the number of output targets and the number of real targets for target detection are not fixed 
+(the unstructured characteristics mentioned above), so the judgment should not only be as simple as "right or wrong", 
+we need to consider : How much damage to performance if you miss a target? How much damage to performance if one more 
+target is detected? If the detected position information deviates, how much damage will the performance cause? Further, 
+among so many detection results, there are always some very determined detectors, and some are ambiguous. What if the 
+detector is not sure about the target that was detected more? What if the test result that the detector is most satisfied 
+with and trusted is wrong? In other words: should the impact of a test result on performance be related to the detector's 
+satisfaction (confidence) with it? And, should the performance damage caused by detecting a rare object and the common 
+object being wrong be the same? ...
 
 刚刚提到的所有问题，mmAP都要一一给出答案。
 
-首先是位置偏差问题。有的使用场景对位置的准确度要求不高，有的则要求精确定位。因此，mmAP先按位置准确度的需求进行划分，设置一组IOU阈值，这组阈值为 (0.5, 0.55, 0.6, ..., 0.9,
-0.95),如果DT与GT的IOU超过阈值，则视作检测成功。这样每给定一个阈值就可以计算出一个性能（也就是mAP，后面详述），然后对这些性能取平均（也就是mmAP，后面详述）就是整个检测算法的性能了。
+All the questions just mentioned, mmAP will give answers one by one.
 
-然后是类别平衡问题，这一问题在分类领域非常常见，“将一个白血病患者错分为健康的人“和“将一个健康的人错分为白血病患者“是一样的吗？显然不是，因为白血病患者本身就属于少数，如果一个分类器把所有人都无脑地判断为健康，其正确率就是 健康的人/全部人。这个分类器的正确率很高但是完全失去了判断病患的功能。mmAP为了公平的评价检测器在各个类别上的性能，采用了类别间求平均的方法：先给定一个IOU阈值，然后将所有的GT和DT按照类别先进行划分，用同一类的所有GT和DT计算出一个性能（也就是AP，马上详述），然后对所有类别的性能取平均（mAP），就是检测算法在这个IOU阈值下的性能。
-mmAP为了公平的评价检测器在各个类别上的性能，采用了类别间求平均的方法：先给定一个IOU阈值，然后将所有的GT和DT按照类别先进行划分，用同一类的所有GT和DT计算出一个性能（也就是AP，马上详述），然后对所有类别的性能取平均（mAP），就是检测算法在这个IOU阈值下的性能。
+首先是位置偏差问题。有的使用场景对位置的准确度要求不高，有的则要求精确定位。因此，mmAP先按位置准确度的需求进行划分，设置一组IOU阈值，
+这组阈值为 (0.5, 0.55, 0.6, ..., 0.9,
+0.95),如果DT与GT的IOU超过阈值，则视作检测成功。这样每给定一个阈值就可以计算出一个性能（也就是mAP，后面详述），然后对这些性能取平均
+（也就是mmAP，后面详述）就是整个检测算法的性能了。
 
-现在我们来看看，给定了一个IOU阈值、并给定了一个类别，如何具体地计算检测的性能。首先，我们要先对所有的检测结果排序，得分越高的排序越靠前，然后依次判断检测是否成功。将排序后的所有结果定义为DTs，所有同类别的真实目标定义为GTs。先依序遍历一遍DTs中的所有DT，每个DT和全部GT都计算一个IOU，如果最大的IOU超过了给定的阈值，那么视为检测成功，算作TP（True Positive），并且最大IOU对应的GT被视为匹配成功；如果该DT与所有GT的IOU都没超过阈值，自然就是FP（False Positive）；同时，每当一个GT被检测成功后，都会从GTs中“被取走”，以免后续的检测结果重复匹配。因此如果有多个检测结果都与同一个GT匹配，那么分数最高的那个会被算为TP，其余均为FP。遍历完成后，我们就知道了所有DTs中，哪些是TP，哪些是FP，而由于被匹配过的GT都会“被取走”，因此GTs中剩下的就是没有被匹配上的FN（False Negative）。
+The first is the problem of position deviation. Some use scenarios do not require high position accuracy, while others 
+require precise positioning. Therefore, mmAP is first divided according to the requirements of position accuracy, 
+and a set of IOU thresholds is set. This set of thresholds is (0.5, 0.55, 0.6, ..., 0.9, 0.95). If the IOUs of DT 
+and GT exceed the thresholds, then The test was successful. In this way, every given threshold can calculate a performance 
+(that is, mAP, detailed later), and then average these performances (that is, mmAP, detailed later) is the performance of 
+the entire detection algorithm.
 
-有了TP、FP、FN的定义，就可以方便地得出准确率（Precison，P，即所有的检测结果中多少是对的）和召回率（Recall，R，即所有的真实目标中有多少被检测出来了），两者的定义分别为：P = TP / (TP + FP), R = TP / (TP + FN) = TP / len(GTs)。
+然后是类别平衡问题，这一问题在分类领域非常常见，“将一个白血病患者错分为健康的人“和“将一个健康的人错分为白血病患者“是一样的吗？显然不是，
+因为白血病患者本身就属于少数，如果一个分类器把所有人都无脑地判断为健康，其正确率就是 健康的人/全部人。这个分类器的正确率很高但是完全失去了
+判断病患的功能。mmAP为了公平的评价检测器在各个类别上的性能，采用了类别间求平均的方法：先给定一个IOU阈值，然后将所有的GT和DT按照类别先进行划分，
+用同一类的所有GT和DT计算出一个性能（也就是AP，马上详述），然后对所有类别的性能取平均（mAP），就是检测算法在这个IOU阈值下的性能。
+mmAP为了公平的评价检测器在各个类别上的性能，采用了类别间求平均的方法：先给定一个IOU阈值，然后将所有的GT和DT按照类别先进行划分，用同一类
+的所有GT和DT计算出一个性能（也就是AP，马上详述），然后对所有类别的性能取平均（mAP），就是检测算法在这个IOU阈值下的性能。
 
-但是，单纯地用Precision和Recall来评价整个检测器并不公平，因为有的检测任务要求更高的Recall，“错检”几个影响不大；有的检测任务则要求更高的Precision，“漏检”几个影响不大。因此我们需要对Precision和Recall做一个整体的评估，而这个评估就是前文提到的AP（Average Precision），其定义非常简单，对排序好的det结果进行“截取”，依次观察det结果的前1个（也就是只有第一个结果）、前2个、...、前N个，每次观察都能够得到一个对应的P和R，随着观察数量的增大，R一定会变大或不变。因此可以以R为横轴，P为纵轴，将每次的“截取”观察到的P和R画成一个点（R，P）。值得注意的是，当“截取”到的新结果为FP时，因为R没有变化所以并不会有新的（R，P）点诞生。最后利用这些（R，P）点绘制成P-R曲线，定义：$AP=\int_{0}^{1}P\mathrm{d}R$。通俗点讲，AP就是这个P-R曲线下的面积。AP计算了不同Recall下的Precision，综合性地评价了检测器，并不会对P和R有任何“偏好”，同时，检测分数越高的结果对AP的影响越大，分数越低的对AP的影响越小。
-实际上在计算AP时，都要对P-R曲线做一次修正，将P值修正为当R>R0时最大的P（R0即为该点对应的R），即 $AP=\int_{0}^{1}max(\{P(r)|r \geq R\})\mathrm{d}R$
+Then there is the problem of category balance. This problem is very common in the field of classification. 
+Are "misclassifying a leukemia patient as a healthy person" and "misclassifying a healthy person as a leukemia 
+patient" the same? Obviously not, because leukemia patients are a minority. If a classifier judges everyone as 
+brainless, the correct rate is healthy people/all people. The accuracy of this classifier is very high but it 
+completely loses the function of judging patients.In order to fairly evaluate the performance of the detector 
+in each category, mmAP adopts the method of averaging between categories: first, an IOU threshold is given, 
+and then all GT and DT are divided according to the category, and all the GT and DT of the same category are used. 
+DT calculates a performance (that is, AP, detailed immediately), and then averages the performance of all categories (mAP), 
+which is the performance of the detection algorithm under this IOU threshold. In order to fairly evaluate the performance of
+the detector in each category, mmAP adopts the method of averaging between categories: first, an IOU threshold is given, 
+and then all GT and DT are divided according to the category, and all the GT and DT of the same category are used. DT 
+calculates a performance (that is, AP, detailed immediately), and then averages the performance of all categories (mAP), 
+which is the performance of the detection algorithm under this IOU threshold.
 
-除了AP、mAP、mmAP之外，还有一个重要的性能是Recall，有时我们也需要关心“检测器能达到的最大Recall是多少？尽管此时的Precision可能非常低”，AR就是度量Recall的。每给定一个IOU阈值和类别，都会得到一个P-R曲线，该曲线P不为0时的最大的R，就称为该IOU阈值下该类别的Recall（其实是“最大Recall”），在类别尺度上平均后，就是该IOU阈值下的AR，通常我们会用AR[0.5:0.95]表示所有IOU阈值下AR的平均值（也就是mAR）。值得注意的是，AR并不是和mmAP同等量级的性能度量指标，因为AP综合考虑了P和R，而AR只是考虑了Recall。计算AR通常是用于帮助我们分析检测器性能特点的。在两个检测结果的mmAP相同时，更高的AR并不意味着更好的检测效果，而仅仅意味着“更扁平的P-R曲线”（可自行脑补该曲线）。
+现在我们来看看，给定了一个IOU阈值、并给定了一个类别，如何具体地计算检测的性能。首先，我们要先对所有的检测结果排序，得分越高的排序越靠前，
+然后依次判断检测是否成功。将排序后的所有结果定义为DTs，所有同类别的真实目标定义为GTs。先依序遍历一遍DTs中的所有DT，每个DT和全部GT都计算一个IOU，
+如果最大的IOU超过了给定的阈值，那么视为检测成功，算作TP（True Positive），并且最大IOU对应的GT被视为匹配成功；如果该DT与所有GT的IOU都没超过阈值，
+自然就是FP（False Positive）；同时，每当一个GT被检测成功后，都会从GTs中“被取走”，以免后续的检测结果重复匹配。因此如果有多个检测结果都与同一个GT匹配，
+那么分数最高的那个会被算为TP，其余均为FP。遍历完成后，我们就知道了所有DTs中，哪些是TP，哪些是FP，而由于被匹配过的GT都会“被取走”，
+因此GTs中剩下的就是没有被匹配上的FN（False Negative）。
+
+Now let's take a look at how to calculate the detection performance given an IOU threshold and a category. First, 
+we must first sort all the detection results, the higher the score, the higher the ranking, and then determine whether 
+the detection is successful. All sorted results are defined as DTs, and all real targets in the same category are defined as GTs. 
+First traverse all the DTs in the DTs in sequence. Each DT and all GTs calculate an IOU. If the maximum IOU exceeds the given 
+threshold, it is regarded as a successful detection, which is counted as TP (True Positive) and the maximum IOU The corresponding 
+GT is regarded as a successful match; if the DT and the IOU of all GTs do not exceed the threshold, it is naturally FP 
+(False Positive); at the same time, every time a GT is detected successfully, it will be "taken away" from the GTs , 
+So as to avoid repeated matching of subsequent test results. Therefore, if multiple test results match the same GT, the one with 
+the highest score will be counted as TP, and the rest will be FP. After the traversal is completed, we know which of all DTs are 
+TP and which are FP, and because the matched GT will be "taken away", so the rest of the GTs are FN (False Negative) that are not
+matched ).
+
+有了TP、FP、FN的定义，就可以方便地得出准确率（Precison，P，即所有的检测结果中多少是对的）和召回率（Recall，R，即所有的真实目标中有多少被检测出来了），
+两者的定义分别为：P = TP / (TP + FP), R = TP / (TP + FN) = TP / len(GTs)。
+
+With the definition of TP, FP, FN, you can easily get the accuracy rate (Precison, P, that is, how many of the test results 
+are correct) and the recall rate (Recall, R, that is, how many of all the real targets Was detected), the definition of the two 
+are: P = TP / (TP + FP), R = TP / (TP + FN) = TP / len(GTs).
+
+但是，单纯地用Precision和Recall来评价整个检测器并不公平，因为有的检测任务要求更高的Recall，“错检”几个影响不大；有的检测任务则要求更高的Precision，
+“漏检”几个影响不大。因此我们需要对Precision和Recall做一个整体的评估，而这个评估就是前文提到的AP（Average Precision），其定义非常简单，对排序好的
+det结果进行“截取”，依次观察det结果的前1个（也就是只有第一个结果）、前2个、...、前N个，每次观察都能够得到一个对应的P和R，随着观察数量的增大，R一定会变
+大或不变。因此可以以R为横轴，P为纵轴，将每次的“截取”观察到的P和R画成一个点（R，P）。值得注意的是，当“截取”到的新结果为FP时，因为R没有变化所以并不会有新
+的（R，P）点诞生。最后利用这些（R，P）点绘制成P-R曲线，定义：$AP=\int_{0}^{1}P\mathrm{d}R$。通俗点讲，AP就是这个P-R曲线下的面积。AP计算了不
+同Recall下的Precision，综合性地评价了检测器，并不会对P和R有任何“偏好”，同时，检测分数越高的结果对AP的影响越大，分数越低的对AP的影响越小。
+实际上在计算AP时，都要对P-R曲线做一次修正，将P值修正为当R>R0时最大的P（R0即为该点对应的R），
+即 $AP=\int_{0}^{1}max(\{P(r)|r \geq R\})\mathrm{d}R$
+
+However, it is not fair to use Precision and Recall to evaluate the entire detector simply, because some detection tasks 
+require higher Recall, and "fault detection" has little effect; some detection tasks require higher Precision, " The "missing 
+test" has few effects. Therefore, we need to make an overall assessment of Precision and Recall, and this assessment is the AP 
+(Average Precision) mentioned above. Its definition is very simple. It is to "intercept" the sorted det results and observe the 
+top 1 of the det results in turn. (That is, only the first result), the first 2, ..., the first N, each observation can get a 
+corresponding P and R, with the increase in the number of observations, R will become larger or constant. Therefore, R and P 
+can be plotted on the horizontal axis and P on the vertical axis, and the P and R observed in each "interception" can be drawn 
+as a point (R, P). It is worth noting that when the new result "intercepted" is FP, no new (R, P) point will be born because R 
+has not changed. Finally, use these (R, P) points to draw a P-R curve and define: $AP=\int_{0}^{1}P\mathrm{d}R$. In layman's 
+terms, AP is the area under this P-R curve. The AP calculates the Precision under different Recalls, comprehensively evaluates 
+the detector, and does not have any "preference" for P and R. At the same time, the higher the detection score, the greater the 
+impact on the AP and the lower the score. The smaller the influence of AP. In fact, when calculating the AP, the P-R curve must 
+be corrected once, and the P value is corrected to the maximum P when R>R0 (R0 is the R corresponding to the point),
+That is, $AP=\int_{0}^{1}max(\{P(r)|r \geq R\})\mathrm{d}R$
+
+除了AP、mAP、mmAP之外，还有一个重要的性能是Recall，有时我们也需要关心“检测器能达到的最大Recall是多少？尽管此时的Precision可能非常低”，
+AR就是度量Recall的。每给定一个IOU阈值和类别，都会得到一个P-R曲线，该曲线P不为0时的最大的R，就称为该IOU阈值下该类别的Recall（其实是“最大Recall”），
+在类别尺度上平均后，就是该IOU阈值下的AR，通常我们会用AR[0.5:0.95]表示所有IOU阈值下AR的平均值（也就是mAR）。值得注意的是，AR并不是和mmAP同等量级的
+性能度量指标，因为AP综合考虑了P和R，而AR只是考虑了Recall。计算AR通常是用于帮助我们分析检测器性能特点的。在两个检测结果的mmAP相同时，更高的AR并不意
+味着更好的检测效果，而仅仅意味着“更扁平的P-R曲线”（可自行脑补该曲线）。
+
+In addition to AP, mAP, mmAP, there is another important performance is Recall, and sometimes we also need to care 
+about "What is the maximum Recall that the detector can achieve? Although the Precision at this time may be very low", 
+AR is to measure Recall. Each given an IOU threshold and category, a PR curve is obtained. The maximum R when the curve P 
+is not 0 is called the Recall of the category under the IOU threshold (in fact, it is "maximum Recall"). After the upper average, 
+it is the AR under the IOU threshold. Generally, we will use AR [0.5:0.95] to represent the average value of all AR under the IOU 
+threshold (that is, mAR). It is worth noting that AR is not a performance metric of the same order as mmAP, because AP takes P 
+and R into consideration, while AR only considers Recall. The calculation of AR is usually used to help us analyze the performance 
+characteristics of the detector. When the mmAP of the two test results is the same, a higher AR does not mean a better detection 
+effect, but only means a "flatter P-R curve" (the curve can be supplemented by the brain).
 "
 
 \href{https://zhuanlan.zhihu.com/p/56899189}{mmAP浅析二}对mAP做了更进一步的探讨。
+Further discussion on mAP.
 
 % 事实上，一般目标检测的评估没有考虑以上问题，那些点一般也是针对不同场景，但，考虑到通用性，沿着这个思路，
 % MAP评估也许存在类别混淆，检测混淆，类别检测关联矩阵，权重矩阵等各自分离实现，然后用一个统一的函数将其组合起来的通用实现方式。
 
-mmdet中模型性能评估代码有多种，coco，cityspaces格式调用了各自默认的api，而被转化为mmdet中间通用格式的(xml等)，则评估调用mean\_ap, recall函数。这里对代码做一些简单的注释。
+mmdet中模型性能评估代码有多种，coco，cityspaces格式调用了各自默认的api，而被转化为mmdet中间通用格式的(xml等)，则评估调用mean\_ap, recall函数。
+这里对代码做一些简单的注释。
+
+There are multiple models for evaluating the performance of the model in mmdet. The coco and cityspaces formats call 
+their default APIs, and are converted to the common format of mmdet (xml, etc.), then the assessment mean\_ap, recall 
+function is called. Here are some simple comments on the code.
 
 \lstset{style=mystyle}
 \begin{lstlisting}[language=Python]
@@ -1097,6 +1422,11 @@ def eval_map(det_results,
 于是需要在Hook中实现after\_train\_epoch。因为mmdet的数据类，实现了对应的evaulate,所以这里的EvalHook可按
 如下形式实现:
 
+It should be noted that the model is evaluated during training, and the mmdet training process is 
+required. That is to say, the evaluation function needs to be registered in the corresponding hook, 
+so after\_train\_epoch needs to be implemented in Hook. Because the data class of mmdet implements 
+the corresponding evaulate, the EvalHook here can be implemented as follows:
+
 \lstset{style=mystyle}
 \begin{lstlisting}[language=Python]
 class EvalHook(Hook):
@@ -1120,11 +1450,15 @@ class EvalHook(Hook):
 
 总结：原理，怎么组织数据格式，多加练习numpy的基本函数。
 
+Summary: Principles, how to organize data format, and more practice basic functions of numpy.
 % \subsection{mask}
 % 主要是借鉴之detectron2的结构类，数据结构是精髓。
 \subsection{optimizer}
 torch的优化器基本完备，mmdet中这部分代码上也没什么可说的，
 所以这里主要说一些和理论相关的内容。
+
+pytorch's optimizer is basically complete, there is nothing to say in this part of the code in mmdet,
+So here mainly talk about some content related to theory.
 
 \subsubsection{优化算法}
 
@@ -1160,12 +1494,37 @@ torch的优化器基本完备，mmdet中这部分代码上也没什么可说的�
 穷小或无穷大去了. 关于这一点, 博主又更新了一篇文章Saddles Again, 文
 章表明一般优化算法很难收敛到鞍点, 除非你精心设计初始点, 调节参数等.
 
+1,2,3 mainly from this blog post:
+\href{http://www.offconvex.org/2016/03/22/saddlepoints/}{Escaping from Saddle Points}, paper 1 shows 
+that in deep learning, almost all local extreme points and the global best The difference in values ​​
+is not large, so as long as it converges to the local minimum point. Article 3 also points out that 
+finding local extreme points of general non-convex functions is an NP-hard problem. In addition, 
+Article 3 mainly considers Degenerate saddle points in non-convex optimization problems, and give 
+an algorithm that uses third-order derivative information to escape saddle points and converge to 
+the third-order local minimum value. In article 2, the author defines the concept of strict saddle 
+and gives random gradient descent Proof that the method can converge to a local extreme point in polynomial 
+time (with restrictions), that is, $y=x-\eta \nabla f(x)+\epsilon$, where $\epsilon$ is the gradient random 
+factor.
+But the saddle point is unstable, and it is easy to escape near the saddle point by adding a disturbance 
+factor. However, the problem is if the stable area near the saddle point is too large, or the direction of 
+escape is not correct, what should I do? This makes it easy to run to infinitesimal or Infinity has gone. 
+About this, the blogger has updated an article Saddles Again, the article shows that the general optimization a
+is difficult to converge to the saddle point, unless you carefully design the initial point, adjust the 
+parameters, etc.
+
 考虑简单的不定二次型,$f(x)=\frac{1}{2} \sum_{i=1}^{d} a_{i} x_{i}^{2}$
 其中前 $k$ 个系数为正, 后
 $d − k $个系数为负数, 因此我们很容易得到其梯度迭代形式:
 $$x^{(k+1)}=x^{(k)}-t \nabla f\left(x^{(k)}\right)$$
 考虑第 $i $维度, 容易得到
 $$x_{i}^{(k)}=\left(1-t a_{i}\right)^{k} x_{i}^{(0)}$$
+
+Consider a simple indefinite quadratic form, $f(x)=\frac{1}{2} \sum_{i=1}^{d} a_{i} x_{i}^{2}$
+The first $k$ coefficients are positive, and the last $d − k $ coefficients are negative, so we can 
+easily get the gradient iteration form: $$x^{(k+1)}=x^{(k)} -t \nabla f\left(x^{(k)}\right)$$
+Considering the first $i $ dimension, it is easy to get
+$$x_{i}^{(k)}=\left(1-t a_{i}\right)^{k} x_{i}^{(0)}$$
+
 
 因 $\exists a_i > 0,$ 于是从任何非零点开始都将以指数般的速度发散到无穷远. 
 当且仅当初始点为 0 时, 方才收敛, 但凡有一点扰动, 都将发散 (原文似乎有一些
@@ -1174,11 +1533,26 @@ $$x_{i}^{(k)}=\left(1-t a_{i}\right)^{k} x_{i}^{(0)}$$
 梯度下降收敛到一阶驻点的收敛速度同步差仅一个对数因子. 该方法可直接
 用于矩阵分解问题. 
 
+Since $\exists a_i> 0,$ will diverge from any non-zero point to infinity at an exponential rate. 
+It will only converge if and only when the initial point is 0, but it will diverge if there is a 
+little disturbance (the original text seems to There are some imperfections). Article 4 also increases 
+the disturbance in the gradient direction, giving a polynomial time complexity algorithm that converges 
+to the second-order stagnation point almost independent of the dimension. And the convergence speed and 
+the well-known gradient descent converge to one The difference in the convergence speed of the order 
+stagnation point is only a log factor. This method can be directly used for matrix factorization problems.
+
 文章 5 实验了使用不同大小批量训练时, 模型的收敛邻域的局部几何之
 间的区别. 结果显示, 此前人们普遍相信的鞍点困扰优化的论据其实并不存
 在在大批量训练过程中, 真正的原因是大批量训练的模型会逐渐收敛于具有
 更大的谱的区域, Hessian 矩阵的谱越大, 其对应的极值点更尖锐, 因此泛化
 更低, 但, 锐度可能不是唯一的因素.
+
+Article 5 experimented with the local geometry of the convergent neighborhood of the model when training 
+in batches of different sizes. The difference between the results. The results show that the previously 
+popular belief that the saddle point troubles optimization does not actually exist in the process of mass 
+training. The real reason is that the models trained in large batches will gradually converge to regions with 
+larger spectra. Hessian The larger the spectrum of the matrix, the sharper the corresponding extreme point, 
+so the generalization is lower, but the sharpness may not be the only factor.
 
 DL中的优化算法，这里采用\href{https://zhuanlan.zhihu.com/p/32230623}{Juliuszh}
 的逻辑说明:
@@ -1451,6 +1825,7 @@ def find_lr(init_value = 1e-8, final_value=10., beta = 0.98):
 \end{figure}
 
 想象一下，要想跳出局部极值点，必须增加探索的范围，或者在极值区域附近，疯狂增加学习率，
+
 并记录很多中间结果，然后采用回溯的方式，进行更新。只是这样，代码复杂，速度很慢，而且实际情况是DL
 很多极值点的高度都差不多(\ref{all not diff})。
 
